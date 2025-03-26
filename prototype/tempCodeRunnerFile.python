@@ -1,0 +1,24 @@
+import networkx as nx
+import matplotlib.pyplot as plt
+import kicadsch
+
+# Load schematic
+doc = kicadsch.Schematic("your_schematic.kicad_sch")
+
+# Create a graph
+G = nx.Graph()
+
+# Add components as nodes
+for comp in doc.components:
+    G.add_node(comp.ref, label=comp.value)
+
+# Add connections as edges
+for net in doc.nets:
+    nodes = [node.component.ref for node in net.nodes if node.component]
+    for i in range(len(nodes) - 1):
+        G.add_edge(nodes[i], nodes[i + 1])
+
+# Draw the graph
+plt.figure(figsize=(10, 6))
+nx.draw(G, with_labels=True, node_color="lightblue", edge_color="gray")
+plt.show()
