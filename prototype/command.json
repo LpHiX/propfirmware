@@ -1,0 +1,24 @@
+{
+    "board_name": "ActuatorBoard",
+    "message": {
+        "timestamp": 0,
+        "source": "RP4",
+        "destination": "ActuatorBoard",
+        "servos": [
+            {
+                "channel": 15,
+                "armed": True,
+                "pwm": 1550,
+                "name": "Servo1"
+            }
+        ],
+        "solenoids": [
+            {
+                "gpio": 40,
+                "armed": True,
+                "powered": False,
+                "name": "LED"
+            },
+        ]
+    }
+}
