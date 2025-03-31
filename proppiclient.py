@@ -24,7 +24,7 @@ class UDPManager(QObject):
 
         self.transmit_timer = QTimer(self)
         self.transmit_timer.timeout.connect(self.request_states)
-        self.transmit_timer.start(10) #10ms = 100Hz
+        self.transmit_timer.start(1000) #10ms = 100Hz
 
     @Slot()
     def request_states(self):
@@ -49,13 +49,13 @@ class UDPManager(QObject):
         self.socket.writeDatagram(QByteArray(data.encode()), QHostAddress(self.host), self.port)
 
     @Slot()
-    def send_actuator_command(self, board_name, actuator_type, actuator_name, command, value):
+    def send_actuator_command(self, board_name, actuator_types, actuator_name, command, value):
         message = {
             "command": "update desired state",
             "data":{
                 "board_name": board_name,
                 "message": {
-                    actuator_type: {
+                    actuator_types: {
                         actuator_name: {
                             command: value
                         }
@@ -65,73 +65,155 @@ class UDPManager(QObject):
         }
         self.send(json.dumps(message))
 
-class ServoControllerWidget(QWidget):
-    def __init__(self, config, board_name, servo_name, udpmanager):
+class ActuatorControllerWidget(QWidget):
+    """Base class for all actuator controller widgets"""
+    def __init__(self, config, board_name, actuator_name, actuator_type, udpmanager):
         super().__init__()
         self.config = config
         self.board_name = board_name
-        self.servo_name = servo_name
-        self.udpmanager: UDPManager = udpmanager
-
-        try:
-            angle = self.config["boards"][self.board_name]["servos"][self.servo_name]["angle"]
-        except KeyError:
-            angle = "No data"
+        self.actuator_name = actuator_name
+        self.actuator_type = actuator_type  # "servos", "solenoids", etc.
+        self.udpmanager = udpmanager
         
-        try:
-            armed = self.config["boards"][self.board_name]["servos"][self.servo_name]["armed"]
-        except KeyError:
-            armed = "No data"
-
-        self.name_label = QLabel(f"Servo: {self.servo_name}")
-        self.angle_label = QLabel(f"Angle: {angle}")
-        self.armed_label = QLabel(f"Armed: {armed}")
-
-        self.manual_angle = QLineEdit(self)
-        self.manual_angle.setPlaceholderText("0")
-        self.manual_angle_button = QPushButton("Set Angle")
-        self.manual_angle_button.clicked.connect(self.set_manual_angle)
-
+        # Define standard widths
+        self.LABEL_WIDTH = 150
+        self.BUTTON_WIDTH = 100
+        self.INPUT_WIDTH = 80
+        
+        # Create common layout
+        self.layout = QHBoxLayout()
+        self.setLayout(self.layout)
+        
+        # Create common UI elements
+        self.name_label = QLabel(f"{self.get_actuator_type_name()}: {self.actuator_name}")
+        self.name_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.name_label)
+        
+        # Armed state is common to most actuators
+        self.armed_label = QLabel(f"Armed: No data")
+        self.armed_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.armed_label)
+        
+        # Common arm/disarm buttons
         self.arm_button = QPushButton("Arm")
-        self.arm_button.clicked.connect(lambda: self.udpmanager.send_actuator_command(self.board_name, "servos", self.servo_name, "armed", True))
-        self.disarm_button = QPushButton("Disarm")
-        self.disarm_button.clicked.connect(lambda: self.udpmanager.send_actuator_command(self.board_name, "servos", self.servo_name, "armed", False))
-        layout = QHBoxLayout()
-
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.angle_label)
-        layout.addWidget(self.armed_label)
-        layout.addWidget(self.manual_angle)
-        layout.addWidget(self.manual_angle_button)
-        layout.addWidget(self.arm_button)
-        layout.addWidget(self.disarm_button)
-        self.setLayout(layout)
-
-    def update_states(self, states):
-
-        try:
-            angle = states["servos"][self.servo_name]["angle"]
-        except KeyError:
-            angle = "No data"
+        self.arm_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.arm_button.clicked.connect(lambda: self.send_command("armed", True))
         
-        #print(f'{self.servo_name},{angle}')
-        self.angle_label.setText(f"Angle: {angle}")
-
+        self.disarm_button = QPushButton("Disarm")
+        self.disarm_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.disarm_button.clicked.connect(lambda: self.send_command("armed", False))
+        
+        self.layout.addWidget(self.arm_button)
+        self.layout.addWidget(self.disarm_button)
+        
+        # Add specific UI elements
+        self.setup_specific_ui()
+    
+    def send_command(self, command, value):
+        """Send command to the actuator"""
+        self.udpmanager.send_actuator_command(
+            self.board_name, 
+            self.actuator_type, 
+            self.actuator_name, 
+            command, 
+            value
+        )
+    
+    def update_common_states(self, states):
+        """Update common states like armed status"""
         try:
-            armed = states["servos"][self.servo_name]["armed"]
+            armed = states[self.actuator_type][self.actuator_name]["armed"]
+            self.armed_label.setText(f"Armed: {armed}")
         except KeyError:
-            armed = "No data"
+            self.armed_label.setText("Armed: No data")
+    
+    def update_states(self, states):
+        """Update widget with current states"""
+        self.update_common_states(states)
+        self.update_specific_states(states)
+    
+    def setup_specific_ui(self):
+        """Set up actuator-specific UI elements. Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement setup_specific_ui()")
+    
+    def update_specific_states(self, states):
+        """Update actuator-specific states. Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement update_specific_states()")
+    
+    def get_actuator_type_name(self):
+        """Return human-readable actuator type name. Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement get_actuator_type_name()")
 
-        self.armed_label.setText(f"Armed: {armed}")
-
-    def set_manual_angle(self, angle):
+class ServoControllerWidget(ActuatorControllerWidget):
+    def __init__(self, config, board_name, servo_name, udpmanager):
+        super().__init__(config, board_name, servo_name, "servos", udpmanager)
+    
+    def get_actuator_type_name(self):
+        return "Servo"
+    
+    def setup_specific_ui(self):
+        # Servo-specific UI elements
+        self.angle_label = QLabel("Angle: No data")
+        self.angle_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.angle_label)
+        
+        self.manual_angle = QLineEdit(self)
+        self.manual_angle.setFixedWidth(self.INPUT_WIDTH)
+        self.manual_angle.setPlaceholderText("0")
+        
+        self.manual_angle_button = QPushButton("Set Angle")
+        self.manual_angle_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.manual_angle_button.clicked.connect(self.set_manual_angle)
+        
+        self.layout.addWidget(self.manual_angle)
+        self.layout.addWidget(self.manual_angle_button)
+    
+    def update_specific_states(self, states):
+        try:
+            angle = states[self.actuator_type][self.actuator_name]["angle"]
+            self.angle_label.setText(f"Angle: {angle}")
+        except KeyError:
+            self.angle_label.setText("Angle: No data")
+    
+    def set_manual_angle(self):
         try:
             angle = int(self.manual_angle.text())
             if angle < 0 or angle > 180:
                 raise ValueError("Angle must be between 0 and 180")
-            self.udpmanager.send_actuator_command(self.board_name, "servos", self.servo_name, "angle", angle)
+            self.send_command("angle", angle)
         except ValueError as e:
             print(f"Invalid angle: {e}")
+
+class SolenoidControllerWidget(ActuatorControllerWidget):
+    def __init__(self, config, board_name, actuator_name, udpmanager):
+        super().__init__(config, board_name, actuator_name, "solenoids", udpmanager)
+    
+    def get_actuator_type_name(self):
+        return "Solenoid"
+    
+    def setup_specific_ui(self):
+        # Solenoid-specific UI elements
+        self.powered_label = QLabel("Powered: No data")
+        self.powered_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.powered_label)
+        
+        self.poweron_button = QPushButton("Power On")
+        self.poweron_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweron_button.clicked.connect(lambda: self.send_command("powered", True))
+        
+        self.poweroff_button = QPushButton("Power Off")
+        self.poweroff_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweroff_button.clicked.connect(lambda: self.send_command("powered", False))
+        
+        self.layout.addWidget(self.poweron_button)
+        self.layout.addWidget(self.poweroff_button)
+    
+    def update_specific_states(self, states):
+        try:
+            powered = states[self.actuator_type][self.actuator_name]["powered"]
+            self.powered_label.setText(f"Powered: {powered}")
+        except KeyError:
+            self.powered_label.setText("Powered: No data")
 
 class PropertyTestApp(QMainWindow):
     def __init__(self, host, port):
@@ -140,6 +222,7 @@ class PropertyTestApp(QMainWindow):
         self.port = port
         self.hardware_json = None
         self.actuator_list = []
+        self.sensor_list = []
         
         self.setWindowTitle("Property Test App")
         #self.setGeometry(100, 100, 400, 300)
@@ -212,16 +295,32 @@ class PropertyTestApp(QMainWindow):
         actuator_layout = QVBoxLayout()
         self.actuator_list.clear()
 
+        default_actuator_types = {
+            "servos": ServoControllerWidget,
+            "solenoids": ServoControllerWidget,
+        }
+
         for board_name, board_config in self.hardware_json["boards"].items():
             if board_config.get("is_actuator", False):
-                for servo_name, _ in board_config.get('servos', {}).items():
-                    servo_controller_widget = ServoControllerWidget(self.hardware_json, board_name, servo_name, self.udp_manager)
-                    actuator_layout.addWidget(servo_controller_widget)
-                    self.actuator_list.append(servo_controller_widget)
+                for actuator_type, actuator_widget_class in default_actuator_types.items():
+                    if actuator_type in board_config:
+                        for actuator_name, _ in board_config[actuator_type].items():
+                            actuator_controller_widget = actuator_widget_class(self.hardware_json, board_name, actuator_name, self.udp_manager)
+                            actuator_layout.addWidget(actuator_controller_widget)
+                            self.actuator_list.append(actuator_controller_widget)
             
         actuator_group.setLayout(actuator_layout)
         self.control_area.addWidget(actuator_group)
-        print(len(self.actuator_list))
+        
+        sensor_group = QGroupBox("Sensors")
+        sensor_layout = QVBoxLayout()
+        self.sensor_list.clear()
+        for board_name, board_config in self.hardware_json["boards"].items():
+            if board_config.get("is_sensor", False):
+                for sensor_name, _ in board_config.get('sensors', {}).items():
+                    sensor_label = QLabel(f"Sensor: {sensor_name}")
+                    sensor_layout.addWidget(sensor_label)
+                    self.sensor_list.append(sensor_label)
 
     def boards_states_received(self, response):
         try:
