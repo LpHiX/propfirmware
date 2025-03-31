@@ -215,6 +215,107 @@ class SolenoidControllerWidget(ActuatorControllerWidget):
         except KeyError:
             self.powered_label.setText("Powered: No data")
 
+class SensorControllerWidget(QWidget):
+    """"Base class for all sensor controller widgets"""
+    def __init__(self, config, board_name, sensor_name, sensor_type, udpmanager):
+        super().__init__()
+        self.config = config
+        self.board_name = board_name
+        self.sensor_name = sensor_name
+        self.sensor_type = sensor_type  # "pts", "tcs", etc.
+        self.udpmanager = udpmanager
+        
+        # Define standard widths
+        self.LABEL_WIDTH = 150
+        
+        # Create common layout
+        self.layout = QHBoxLayout()
+        self.setLayout(self.layout)
+        
+        # Create common UI elements
+        self.name_label = QLabel(f"{self.get_sensor_type_name()}: {self.sensor_name}")
+        self.name_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.name_label)
+        
+        # Add specific UI elements
+        self.setup_specific_ui()
+    
+    def update_states(self, states):
+        """Update widget with current states"""
+        self.update_specific_states(states)
+    
+    def setup_specific_ui(self):
+        """Set up sensor-specific UI elements. Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement setup_specific_ui()")
+    
+    def update_specific_states(self, states):
+        """Update sensor-specific states. Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement update_specific_states()")
+    
+    def get_sensor_type_name(self):
+        """Return human-readable sensor type name. Override in subclasses."""
+        raise NotImplementedError("Subclasses must implement get_sensor_type_name()")
+    
+class PTSensorWidget(SensorControllerWidget):
+    def __init__(self, config, board_name, sensor_name, udpmanager):
+        super().__init__(config, board_name, sensor_name, "pts", udpmanager)
+    
+    def get_sensor_type_name(self):
+        return "PT Sensor"
+    
+    def setup_specific_ui(self):
+        # PT-specific UI elements
+        self.value_label = QLabel("Value: No data")
+        self.value_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.value_label)
+    
+    def update_specific_states(self, states):
+        try:
+            value = states[self.sensor_type][self.sensor_name]["value"]
+            self.value_label.setText(f"Value: {value}")
+        except KeyError:
+            self.value_label.setText("Value: No data")
+
+class TCSensorWidget(SensorControllerWidget):
+    def __init__(self, config, board_name, sensor_name, udpmanager):
+        super().__init__(config, board_name, sensor_name, "tcs", udpmanager)
+    
+    def get_sensor_type_name(self):
+        return "TC Sensor"
+    
+    def setup_specific_ui(self):
+        # TC-specific UI elements
+        self.value_label = QLabel("Value: No data")
+        self.value_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.value_label)
+    
+    def update_specific_states(self, states):
+        try:
+            value = states[self.sensor_type][self.sensor_name]["value"]
+            self.value_label.setText(f"Value: {value}")
+        except KeyError:
+            self.value_label.setText("Value: No data")
+
+class GPSSensorWidget(SensorControllerWidget):
+    def __init__(self, config, board_name, sensor_name, udpmanager):
+        super().__init__(config, board_name, sensor_name, "gps", udpmanager)
+
+    def get_sensor_type_name(self):
+        return "GPS Sensor"
+    
+    def setup_specific_ui(self):
+
+        self.value_label = QLabel("Value: No data")
+        self.value_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.value_label)
+    
+    def update_specific_states(self, states):
+        try:
+            value = states[self.sensor_type][self.sensor_name]["value"]
+            self.value_label.setText(f"Value: {value}")
+        except KeyError:
+            self.value_label.setText("Value: No data")
+
 class PropertyTestApp(QMainWindow):
     def __init__(self, host, port):
         super().__init__()
@@ -299,6 +400,11 @@ class PropertyTestApp(QMainWindow):
             "servos": ServoControllerWidget,
             "solenoids": ServoControllerWidget,
         }
+        default_sensor_types = {
+            "pts": PTSensorWidget,
+            "tcs": TCSensorWidget,
+            "gps": GPSSensorWidget
+        }
 
         for board_name, board_config in self.hardware_json["boards"].items():
             if board_config.get("is_actuator", False):
@@ -316,11 +422,15 @@ class PropertyTestApp(QMainWindow):
         sensor_layout = QVBoxLayout()
         self.sensor_list.clear()
         for board_name, board_config in self.hardware_json["boards"].items():
-            if board_config.get("is_sensor", False):
-                for sensor_name, _ in board_config.get('sensors', {}).items():
-                    sensor_label = QLabel(f"Sensor: {sensor_name}")
-                    sensor_layout.addWidget(sensor_label)
-                    self.sensor_list.append(sensor_label)
+            if not board_config.get("is_actuator", False):
+                for sensor_type, sensor_widget_class in default_sensor_types.items():
+                    if sensor_type in board_config:
+                        for sensor_name, _ in board_config[sensor_type].items():
+                            sensor_controller_widget = sensor_widget_class(self.hardware_json, board_name, sensor_name, self.udp_manager)
+                            sensor_layout.addWidget(sensor_controller_widget)
+                            self.sensor_list.append(sensor_controller_widget)
+        sensor_group.setLayout(sensor_layout)
+        self.sensor_area.addWidget(sensor_group)
 
     def boards_states_received(self, response):
         try:
