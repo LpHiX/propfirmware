@@ -272,35 +272,43 @@ class SensorControllerWidget(QWidget):
             self.vertical_layout = QVBoxLayout()
             self.vertical_layout.addWidget(self.values[value_name]["label"])
 
-            self.plot = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
-            self.vertical_layout.addWidget(self.plot)
+            # self.plot = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
+            # self.vertical_layout.addWidget(self.plot)
 
             self.layout.addLayout(self.vertical_layout)
             
-            self.value_timer = QTimer(self)
-            self.value_timer.timeout.connect(self.update_history(value_name))
-            self.value_timer.start(1000)
+            # self.value_timer = QTimer(self)
+            # self.value_timer.timeout.connect(self.update_history(value_name))
+            # self.value_timer.start(10)
         self.layout.addStretch()
 
-    def update_history(self, value_name):
-        value_history = self.values[value_name]["history"]
-        for timestamp, value in enumerate(value_history):
-            while value_history[0][0] < QDateTime.currentDateTime().addSecs(-10):
-                del value_history[0]
-            while len(value_history) > 100:
-                del value_history[0]
-        if len(value_history) == 0:
-            return
-        time_arr, sensor_arr = zip(*value_history)
-        self.plot.clear()
-        self.plot.plot(time_arr, sensor_arr, pen='g')
+    # def update_history(self, value_name):
+    #     value_history = self.values[value_name]["history"]
+    #     for timestamp, value in enumerate(value_history):
+    #         while value_history[0][0] < QDateTime.currentDateTime().addSecs(-10):
+    #             del value_history[0]
+    #         while len(value_history) > 100:
+    #             del value_history[0]
+    #     if len(value_history) == 0:
+    #         return
+    #     time_arr, sensor_arr = zip(*value_history)
+    #     print(f"Time array: {time_arr} Sensor array: {sensor_arr}")
+    #     self.plot.clear()
+    #     self.plot.plot(time_arr, sensor_arr, pen='g')
 
     def update_states(self, states):
-        for value_name, value_label in self.values.items():
+        for value_name, value_dict in self.values.items():
             try:
                 value = states[self.sensor_type][self.sensor_name][value_name]
-                value_label.setText(f"Value: {value}")
-                value_label["history"].append((QDateTime.currentDateTime(), value))
+                value_label = value_dict["label"]
+                if "adc" in self.config[self.sensor_type][self.sensor_name]:
+                    gain = self.config[self.sensor_type][self.sensor_name]["gain"]
+                    offset = self.config[self.sensor_type][self.sensor_name]["offset"]
+                    value = (value - offset) * gain
+                    value_label.setText(f"Value: {value}")
+                else:
+                    value_label.setText(f"Value: {value}")
+                self.values[self.sensor_name]["history"].append((QDateTime.currentDateTime(), value))
             except KeyError:
                 value_label.setText("Value: No data")
 
@@ -462,6 +470,9 @@ class PropertyTestApp(QMainWindow):
                 for actuator in self.actuator_list:
                     if actuator.board_name == board_name:
                         actuator.update_states(states)
+                for sensor in self.sensor_list:
+                    if sensor.board_name == board_name:
+                        sensor.update_states(states)
             else:
                 print(f"Board {board_name} not found in hardware json")
         self.last_update_time = QDateTime.currentDateTime()
