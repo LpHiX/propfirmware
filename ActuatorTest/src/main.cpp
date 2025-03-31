@@ -14,7 +14,7 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_I2C_ADDRESS);
 
 #define SERVOMIN 1000  // Minimum pulse length count
 #define SERVOMID 1550  // Mid pulse length count
-#define SERVOMAX 2000  // Maximum pulse length count
+#define SERVOMAX 2000  // Maximum pulse xlength count
 #define SERVO_FREQ 50 // Servo frequency (50 Hz)
 
 #define I2C_SDA 21

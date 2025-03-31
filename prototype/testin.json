@@ -1,27 +1,16 @@
 {
-    "command": "send",
+    "command": "start hotfire sequence",
     "data": {
         "board_name": "ActuatorBoard",
         "message": {
             "timestamp": 0,
-            "source": "RP4",
-            "destination": "ActuatorBoard",
-            "servos": [
-                {
-                    "channel": 15,
+            "solenoids": {
+                "LED":{
+                    "channel": 40,
                     "armed": true,
-                    "pwm": 1550,
-                    "name": "Servo1"
+                    "powered": true
                 }
-            ],
-            "solenoids": [
-                {
-                    "gpio": 40,
-                    "armed": true,
-                    "powered": false,
-                    "name": "LED"
-                }
-            ]
+        }
         }
     }
 }
