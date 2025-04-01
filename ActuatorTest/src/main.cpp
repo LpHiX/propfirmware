@@ -17,8 +17,8 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_I2C_ADDRESS);
 #define SERVOMAX 2000  // Maximum pulse xlength count
 #define SERVO_FREQ 50 // Servo frequency (50 Hz)
 
-#define I2C_SDA 21
-#define I2C_SCL 20
+#define I2C_SDA 5
+#define I2C_SCL 6
 
 // Non-blocking LED state handling
 unsigned long lastLedChangeTime = 0;
@@ -26,6 +26,14 @@ unsigned long lastHeartbeatTime = 0;
 unsigned long heartbeatInterval = 5000;  // 5 seconds interval for heartbeat
 bool ledState = false;  // false = red, true = green
 bool pwmInitialized = false;
+float servos_angles[16] = {0};
+bool servos_armed[16] = {false};
+bool solenoids_armed[7] = {false};
+bool solenoids_powered[7] = {false};
+int solenoids_GPIOS[7] = {1, 2, 42, 41, 40, 39, 38};
+bool pyros_armed[3] = {false};
+bool pyros_powered[3] = {false};
+int pyros_GPIOS[3] = {48, 47, 21};
 
 // Initialize NeoPixel object
 Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -88,63 +96,105 @@ void loop() {
 
 
     Serial.print("Received: ");
-    Serial2.println(buffer);
     Serial.println(buffer);
 
     if (bytesRead > 0) {
       JsonDocument doc; // Size depends on your JSON complexity
-  
-      // Attempt to parse JSON
       DeserializationError error = deserializeJson(doc, buffer);
-      
+
+      JsonDocument responseDoc;
+      responseDoc["servos"] = JsonObject();
+      responseDoc["solenoids"] = JsonObject();
       if (error) {
         Serial.print("failed");
         Serial.println(error.f_str());
       } else {
-        // Successfully parsed JSON
-        //Serial.println("parsed");
-        
-        // Access JSON values
-  
-        JsonArray servos = doc["servos"];
-        
-        for (JsonObject servo : servos) {
-          int channel = servo["channel"];
-          bool armed = servo["armed"];
-          int microseconds = servo["pwm"];
-          
+        // If doc has "servos", process it:
+        JsonObject servos = doc["servos"].as<JsonObject>();
+        for (JsonPair servo : servos) {
+          const char* servoName = servo.key().c_str();
+          JsonObject servoData = servo.value().as<JsonObject>();
+          int channel = servoData["channel"];
+          if (channel < 0 || channel > 15) {
+            continue; // Skip this iteration if the channel is invalid
+          }
           if (pwmInitialized) {
-            if (armed){
-              pwm.writeMicroseconds(channel, microseconds);
-            } else {
-              pwm.writeMicroseconds(channel, SERVOMID);
+            if (servoData.containsKey("armed")) {
+              bool armed_desired = servoData["armed"];
+              servos_armed[channel] = armed_desired;
+            }
+
+            if (servos_armed[channel]) {
+              if (servoData.containsKey("angle")) {
+                float angle_desired = servoData["angle"];
+                int microseconds = map(angle_desired, 0, 180, SERVOMIN, SERVOMAX);
+                pwm.writeMicroseconds(channel, microseconds);
+                servos_angles[channel] = angle_desired;
+              }
             }
           }
+          responseDoc["servos"][servoName]["armed"] = servos_armed[channel];
+          responseDoc["servos"][servoName]["angle"] = servos_angles[channel];
         }
   
-        JsonArray solenoids = doc["solenoids"];
-        
-        for (JsonObject solenoid : solenoids) {
-          int gpiopin = solenoid["gpio"];
-          bool armed = solenoid["armed"];
-          bool powered = solenoid["powered"];
-  
-          if (armed) {
-            pinMode(gpiopin, OUTPUT);
-            digitalWrite(gpiopin, powered ? HIGH : LOW);
-          } else {
-            pinMode(gpiopin, INPUT);  // Set to input to disable the pin
+        JsonObject solenoids = doc["solenoids"].as<JsonObject>();
+        for (JsonPair solenoid : solenoids) {
+          const char* solenoidName = solenoid.key().c_str();
+          JsonObject solenoidData = solenoid.value().as<JsonObject>();
+          int channel = solenoidData["channel"];
+
+          if (channel < 0 || channel > 6) {
+            continue;
           }
+          if (solenoidData.containsKey("armed")){
+            bool armed_desired = solenoidData["armed"];
+            solenoids_armed[channel] = armed_desired;
+          }
+          if (solenoids_armed[channel]) {
+            if (solenoidData.containsKey("powered")){
+              bool powered_desired = solenoidData["powered"];
+              pinMode(solenoids_GPIOS[channel], OUTPUT);
+              digitalWrite(solenoids_GPIOS[channel], powered_desired ? HIGH : LOW);
+              solenoids_powered[channel] = powered_desired;
+            } 
+          } else {
+            pinMode(solenoids_GPIOS[channel], INPUT); 
+            solenoids_powered[channel] = false;
+          }
+
+          responseDoc["solenoids"][solenoidName]["armed"] = solenoids_armed[channel];
+          responseDoc["solenoids"][solenoidName]["powered"] = solenoids_powered[channel];
         }
+
+        // JsonObject pyro_response = responseDoc["pyros"].to<JsonObject>();
+        // JsonObject pyros = doc["pyros"].to<JsonObject>();
+        // for (JsonPair pyro : pyros) {
+        //   const char* pyroName = pyro.key().c_str();
+        //   JsonObject pyroData = pyro.value().as<JsonObject>();
+        //   int channel = pyroData["channel"];
+        //   bool armed_desired = pyroData["armed"];
+        //   bool powered_desired = pyroData["powered"];
+
+        //   pyros_armed[channel] = armed_desired;
+        //   responseDoc["pyros"][pyroName]["armed"] = pyros_armed[channel];
+        //   if (pyros_armed[channel]) {
+        //     pinMode(pyros_GPIOS[channel], OUTPUT);
+        //     digitalWrite(pyros_GPIOS[channel], powered_desired ? HIGH : LOW);
+        //     pyros_powered[channel] = powered_desired;
+        //   } else {
+        //     pinMode(pyros_GPIOS[channel], INPUT); // Set to input to disable power
+        //     pyros_powered[channel] = false; // Reset powered state when not armed
+        //   }
+        //   responseDoc["pyros"][pyroName]["powered"] = pyros_powered[channel];
+
+        // }
+        responseDoc["send_id"] = doc["send_id"];
+        serializeJson(responseDoc, Serial2);
+        Serial2.println(); // Send a newline after the JSON response
+        serializeJson(responseDoc, Serial);
       }
     }
-    
-    // Print received data
-    // Serial.print("Received: ");
-    // Serial.println(buffer);
 
-
-    
     // Set the LED green and remember when we changed it
     pixel.setPixelColor(0, pixel.Color(0, 255, 0));
     ledState = true;

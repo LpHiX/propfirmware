@@ -5,7 +5,7 @@ import signal
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QPushButton, 
                              QTextEdit, QVBoxLayout, QHBoxLayout, QWidget,
-                             QLabel, QSlider, QGroupBox, QGridLayout, QLineEdit)
+                             QLabel, QSlider, QGroupBox, QGridLayout, QLineEdit, QTabWidget)
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtNetwork import QUdpSocket, QHostAddress
 from PySide6.QtCore import QTimer, QByteArray, Slot
@@ -306,7 +306,7 @@ class SensorControllerWidget(QWidget):
         while value_history and value_history[0][0] < cutoff_time:
             value_history.popleft()
         
-        if not value_history:
+        if not value_history:   
             # Reset array size if history is empty
             self.values[value_name]["array_size"] = 0
             return
@@ -321,8 +321,8 @@ class SensorControllerWidget(QWidget):
         
         # Use preallocated arrays for plotting
         self.values[value_name]["curve"].setData(
-            time_array[max(0, size-1000):size], 
-            value_array[max(0, size-1000):size]
+            time_array[max(0, size-100):size], 
+            value_array[max(0, size-100):size]
         )
 
     def update_states(self, states):
@@ -361,8 +361,19 @@ class PropertyTestApp(QMainWindow):
 
 
         self.setWindowTitle("Property Test App")
-        #self.setGeometry(100, 100, 400, 300)
-        #self.text_edit = QTextEdit(self)
+        self.tab_widget = QTabWidget()
+        self.setCentralWidget(self.tab_widget)  
+
+        self.main_tab = QWidget()
+        self.pressure_tab = QWidget()
+        self.tab_widget.addTab(self.main_tab, "Main")
+        self.tab_widget.addTab(self.pressure_tab, "Pressure")
+        self.main_layout = QHBoxLayout(self.main_tab)
+
+        #container = QWidget()
+        #container.setLayout(self.main_layout)
+
+
         self.data_waiting_label = QLabel("Waiting for data...")
 
         self.last_update_time = None
@@ -382,10 +393,19 @@ class PropertyTestApp(QMainWindow):
         self.manual_command_layout.addWidget(self.manual_command_button)
         self.manual_command_layout.addWidget(self.manual_response)
 
+        self.preset_commands_layout = QVBoxLayout()
         self.hotfire_button = QPushButton("Hotfire")
         self.hotfire_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"start hotfire sequence", "data":{}})))
-        self.preset_commands_layout = QVBoxLayout()
         self.preset_commands_layout.addWidget(self.hotfire_button)
+
+        self.reload_hardware_json = QPushButton("Reload Hardware JSON")
+        self.reload_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"reload hardware json", "data":{}})))
+        self.preset_commands_layout.addWidget(self.reload_hardware_json)
+
+        self.get_new_hardware_json = QPushButton("Get New Hardware JSON (DOESNT WORK)")
+        self.get_new_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"get hardware json", "data":{}})))
+        self.preset_commands_layout.addWidget(self.get_new_hardware_json)
+
         self.preset_commands_layout.addStretch()
 
         self.commands_layout = QHBoxLayout()
@@ -399,14 +419,10 @@ class PropertyTestApp(QMainWindow):
         self.actuators_sensors_area.addLayout(self.control_area)
         self.actuators_sensors_area.addLayout(self.sensor_area)
 
-        self.main_layout = QHBoxLayout()
+
         self.main_layout.addWidget(self.data_waiting_label)
         self.main_layout.addLayout(self.actuators_sensors_area)
         self.main_layout.addLayout(self.commands_layout)
-
-        container = QWidget()
-        container.setLayout(self.main_layout)
-        self.setCentralWidget(container)  
 
         self.udp_manager = UDPManager(self.host, self.port)
         self.udp_manager.dataReceived.connect(self.handle_data_received)
