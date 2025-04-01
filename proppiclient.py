@@ -12,6 +12,8 @@ from PySide6.QtCore import QTimer, QByteArray, Slot
 from PySide6.QtCore import Slot, QObject, Signal
 from PySide6.QtCore import QDateTime
 import pyqtgraph as pg
+import numpy as np
+from collections import deque
 
 class UDPManager(QObject):
     dataReceived = Signal(str)
@@ -31,12 +33,7 @@ class UDPManager(QObject):
         # Timer to check if hardware JSON was received
         self.hardware_json_timer = QTimer(self)
         self.hardware_json_timer.timeout.connect(self.check_hardware_json)
-        self.hardware_json_timer.start(1000)  # Check every 1 second
-
-        self.transmit_timer = QTimer(self)
-        self.transmit_timer.timeout.connect(self.request_states)
-        self.transmit_timer.start(10) #10ms = 100Hz
-    
+        self.hardware_json_timer.start(1000)  # Check every 1 second    
     @Slot()
     def check_hardware_json(self):
         if not self.hardware_json_received:
@@ -49,6 +46,9 @@ class UDPManager(QObject):
             if received:
                 # Stop checking once we've received it
                 self.hardware_json_timer.stop()
+                self.transmit_timer = QTimer(self)
+                self.transmit_timer.timeout.connect(self.request_states)
+                self.transmit_timer.start(10) #10ms = 100Hz
     
     @Slot()
     def request_states(self):
@@ -234,6 +234,7 @@ class SolenoidControllerWidget(ActuatorControllerWidget):
         self.layout.addWidget(self.poweroff_button)
     
     def update_specific_states(self, states):
+        #print(f"Updating states for {self.actuator_name}: {states}")
         try:
             powered = states[self.actuator_type][self.actuator_name]["powered"]
             self.powered_label.setText(f"Powered: {powered}")
@@ -260,55 +261,90 @@ class SensorControllerWidget(QWidget):
         
         # Create common UI elements
         self.name_label = QLabel(f"{self.sensor_type}: {self.sensor_name}")
-        self.name_label.setFixedWidth(self.LABEL_WIDTH + 150)
+        self.name_label.setFixedWidth(self.LABEL_WIDTH + 20)
         self.layout.addWidget(self.name_label)
 
         self.values = {}
+        self.MAX_HISTORY_SIZE = 10000
+        
         for value_name, _ in self.sensor_default_data.items():
             self.values[value_name] = {"value": "No data"}
             self.values[value_name]["label"] = QLabel(f"{value_name}: No data")
             self.values[value_name]["label"].setFixedWidth(self.LABEL_WIDTH)
-            self.values[value_name]["history"] = []
+            self.values[value_name]["history"] = deque(maxlen=self.MAX_HISTORY_SIZE)
+            
+            # Preallocate arrays for improved performance
+            self.values[value_name]["time_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
+            self.values[value_name]["value_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
+            self.values[value_name]["array_size"] = 0
+            
             self.vertical_layout = QVBoxLayout()
             self.vertical_layout.addWidget(self.values[value_name]["label"])
 
-            # self.plot = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
-            # self.vertical_layout.addWidget(self.plot)
+            self.values[value_name]["plot"] = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
+            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen('y', width=2))
+            self.vertical_layout.addWidget(self.values[value_name]["plot"])
 
             self.layout.addLayout(self.vertical_layout)
             
-            # self.value_timer = QTimer(self)
-            # self.value_timer.timeout.connect(self.update_history(value_name))
-            # self.value_timer.start(10)
+            self.value_timer = QTimer(self)
+            self.value_timer.timeout.connect(lambda vn=value_name: self.update_history(vn))
+            self.value_timer.start(50)
         self.layout.addStretch()
 
-    # def update_history(self, value_name):
-    #     value_history = self.values[value_name]["history"]
-    #     for timestamp, value in enumerate(value_history):
-    #         while value_history[0][0] < QDateTime.currentDateTime().addSecs(-10):
-    #             del value_history[0]
-    #         while len(value_history) > 100:
-    #             del value_history[0]
-    #     if len(value_history) == 0:
-    #         return
-    #     time_arr, sensor_arr = zip(*value_history)
-    #     print(f"Time array: {time_arr} Sensor array: {sensor_arr}")
-    #     self.plot.clear()
-    #     self.plot.plot(time_arr, sensor_arr, pen='g')
+    def update_history(self, value_name):
+        value_history = self.values[value_name]["history"]
+        time_array = self.values[value_name]["time_array"]
+        value_array = self.values[value_name]["value_array"]
+
+        if not value_history:
+            return
+        
+        # Clean up old data points (older than 10 seconds)
+        current_time = QDateTime.currentDateTime()
+        cutoff_time = current_time.addSecs(-120)
+        while value_history and value_history[0][0] < cutoff_time:
+            value_history.popleft()
+        
+        if not value_history:
+            # Reset array size if history is empty
+            self.values[value_name]["array_size"] = 0
+            return
+        
+        # Copy data to preallocated arrays
+        size = len(value_history)
+        self.values[value_name]["array_size"] = size
+        
+        for i, (t, v) in enumerate(value_history):
+            time_array[i] = t.toMSecsSinceEpoch()
+            value_array[i] = v
+        
+        # Use preallocated arrays for plotting
+        self.values[value_name]["curve"].setData(
+            time_array[max(0, size-1000):size], 
+            value_array[max(0, size-1000):size]
+        )
 
     def update_states(self, states):
         for value_name, value_dict in self.values.items():
             try:
                 value = states[self.sensor_type][self.sensor_name][value_name]
                 value_label = value_dict["label"]
+                
+                # Apply calibration if available
                 if "adc" in self.config[self.sensor_type][self.sensor_name]:
                     gain = self.config[self.sensor_type][self.sensor_name]["gain"]
                     offset = self.config[self.sensor_type][self.sensor_name]["offset"]
                     value = (value - offset) * gain
-                    value_label.setText(f"Value: {value}")
-                else:
-                    value_label.setText(f"Value: {value}")
-                self.values[self.sensor_name]["history"].append((QDateTime.currentDateTime(), value))
+                
+                # Update the label
+                value_label.setText(f"Value: {value}")
+                
+                # Add to the history deque
+                if value is None:
+                    continue
+                value_dict["history"].append((QDateTime.currentDateTime(), float(value)))
+                
             except KeyError:
                 value_label.setText("Value: No data")
 
@@ -444,18 +480,22 @@ class PropertyTestApp(QMainWindow):
         self.control_area.addWidget(actuator_group)
         
         sensor_group = QGroupBox("Sensors")
-        sensor_layout = QVBoxLayout()
+        sensor_mainlayout = QVBoxLayout()
+        sensors_layout = []
         self.sensor_list.clear()
         for board_name, board_config in self.hardware_json["boards"].items():
             if not board_config.get("is_actuator", False):
                 for sensor_type, sensor_default_data in self.state_defaults.items():
                     if sensor_type in board_config and isinstance(board_config[sensor_type], dict):
+                        sensor_layout = QHBoxLayout()
+                        sensor_mainlayout.addLayout(sensor_layout)
+                        sensors_layout.append(sensor_layout)
                         for sensor_name, _ in board_config[sensor_type].items():
                             sensor_controller_widget = SensorControllerWidget(board_config, sensor_default_data, board_name, sensor_name, sensor_type, self.udp_manager)
                             sensor_layout.addWidget(sensor_controller_widget)
                             self.sensor_list.append(sensor_controller_widget)
-        sensor_layout.addStretch()
-        sensor_group.setLayout(sensor_layout)
+        sensor_mainlayout.addStretch()
+        sensor_group.setLayout(sensor_mainlayout)
         self.sensor_area.addWidget(sensor_group)
 
     def boards_states_received(self, response):

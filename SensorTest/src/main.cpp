@@ -131,6 +131,7 @@ void loop() {
 
 
   adc_mvs[0] = readChannel(0);
+  adc_mvs[1] = readChannel(1);
 
 
   if (currentTime - lastHeartbeatTime > heartbeatInterval) {
