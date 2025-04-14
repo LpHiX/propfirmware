@@ -1,0 +1,491 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_BMP085_U.h>
+#include <QMC5883LCompass.h>
+#include <TinyGPS++.h>
+#include <Adafruit_NeoPixel.h>
+
+// Pin Definitions
+#define I2C_SDA_PIN 7
+#define I2C_SCL_PIN 16
+#define GPS_TX_PIN 17
+#define GPS_RX_PIN 18
+#define LED_PIN 48
+
+// LED Status Colors
+#define COLOR_ERROR     0xFF0000  // Red
+#define COLOR_WAITING   0xFFFF00  // Yellow
+#define COLOR_SUCCESS   0x00FF00  // Green
+#define COLOR_INIT      0x0000FF  // Blue
+#define COLOR_GPS_DATA  0xFF00FF  // Purple - receiving NMEA but no fix
+#define COLOR_HEARTBEAT 0x00FFFF  // Cyan - "heartbeat" pulse
+
+// Sensor Instances
+Adafruit_MPU6050 mpu;
+Adafruit_BMP085_Unified bmp = Adafruit_BMP085_Unified(10085);
+QMC5883LCompass compass;
+TinyGPSPlus gps;
+Adafruit_NeoPixel pixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// UART for GPS
+HardwareSerial gpsSerial(1);  // Use UART1
+
+// Global status variables
+bool mpuStatus = false;
+bool bmpStatus = false;
+bool compassStatus = false;
+bool gpsStatus = false;
+bool gpsDataReceived = false;
+unsigned long lastGpsCharTime = 0;
+unsigned long lastBlinkTime = 0;
+unsigned long lastDiagnosticsTime = 0;
+int maxSatellitesEverSeen = 0;
+bool ledState = false;
+
+// String to hold raw NMEA data for debugging
+String nmeaBuffer = "";
+bool nmeaLineComplete = false;
+
+// Function prototypes
+void updateLedStatus();
+void readGY87Data();
+void readGPSData();
+void printSensorData();
+void configureGPSForRocket();
+void blinkStatusLED();
+void addGPSDiagnostics();
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(115200);
+  // while (!Serial) delay(10);  // Wait for serial console to open
+  
+  Serial.println("ESP32 GY87 and GPS Integration for Rocket Control System");
+  Serial.println("Current time: 2025-04-11 02:01:41 UTC");
+  Serial.println("User: LpHiX");
+  
+  // Initialize NeoPixel
+  pixel.begin();
+  pixel.setPixelColor(0, COLOR_INIT);  // Blue during initialization
+  pixel.setBrightness(5);  // Set brightness to 50%
+  pixel.show();
+  
+  // Initialize I2C
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  
+  // Initialize MPU6050
+  Serial.println("Initializing MPU6050...");
+  if (mpu.begin()) {
+    mpuStatus = true;
+    Serial.println("MPU6050 found!");
+    
+    // Setup MPU6050
+    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  } else {
+    Serial.println("Failed to find MPU6050 chip");
+  }
+  
+  // Initialize BMP085
+  Serial.println("Initializing BMP085...");
+  if (bmp.begin()) {
+    bmpStatus = true;
+    Serial.println("BMP085 found!");
+    
+    sensor_t sensor;
+    bmp.getSensor(&sensor);
+    Serial.print("Sensor: "); Serial.println(sensor.name);
+  } else {
+    Serial.println("Failed to find BMP085 sensor");
+  }
+  
+  // Initialize QMC5883L Compass
+  Serial.println("Initializing QMC5883L Compass...");
+  compass.init();
+  // There's no proper way to check if compass initialization succeeded,
+  // so we'll assume it worked and check data validity later
+  compassStatus = true;
+  Serial.println("QMC5883L Compass initialized");
+  
+  // Initialize GPS module
+  Serial.println("Initializing GPS module...");
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Serial.println("GPS serial initialized");
+  
+  // Configure GPS module for rocket state estimation
+  Serial.println("Configuring GPS for optimal rocket state estimation...");
+  configureGPSForRocket();
+  
+  // Update LED status based on initialization results
+  updateLedStatus();
+  
+  delay(1000);  // Short delay to stabilize sensors
+  
+  Serial.println("\nGPS TROUBLESHOOTING GUIDE:");
+  Serial.println("1. Make sure the GPS antenna has a clear view of the sky");
+  Serial.println("2. First fix may take several minutes (cold start)");
+  Serial.println("3. Check that GPS antenna is properly connected");
+  Serial.println("4. Verify power supply is stable (GPS needs ~50mA)");
+  Serial.println("5. Try moving to a different location");
+  Serial.println("\nSystem is now running. LED will blink to indicate activity.");
+}
+
+void loop() {
+  // Read data from all sensors
+  readGY87Data();
+  readGPSData();
+  
+  // Print data to serial monitor
+  printSensorData();
+  
+  // Update LED status
+  updateLedStatus();
+  
+  // Blink the LED to show the script is running
+  blinkStatusLED();
+  
+  // Add GPS diagnostics
+  addGPSDiagnostics();
+  
+  // Check for GPS timeout
+  if ((millis() - lastGpsCharTime) > 5000 && gpsDataReceived) {
+    gpsDataReceived = false;
+    Serial.println("WARNING: No GPS data received in 5 seconds!");
+  }
+  
+  delay(100);  // Update 10 times per second for more responsive operation
+}
+
+void blinkStatusLED() {
+  // Create a "heartbeat" effect while maintaining the status color
+  unsigned long currentTime = millis();
+  
+  // Every 1 second, do a quick blink
+  if (currentTime - lastBlinkTime > 1000) {
+    lastBlinkTime = currentTime;
+    
+    // Store the current color
+    uint32_t currentColor = pixel.getPixelColor(0);
+    
+    // Flash with the heartbeat color
+    pixel.setPixelColor(0, COLOR_HEARTBEAT);
+    pixel.show();
+    delay(50);
+    
+    // Restore the status color
+    pixel.setPixelColor(0, currentColor);
+    pixel.show();
+  }
+}
+
+void configureGPSForRocket() {
+  // Step 1: Reset the module to ensure clean configuration
+  gpsSerial.println("$PMTK104*37");
+  delay(1000);
+  
+  // Step 2: Set baud rate to maximum supported (115200 bps)
+  gpsSerial.println("$PMTK251,115200*1F");
+  delay(100);
+  
+  // Need to reinitialize serial communication at new baud rate
+  gpsSerial.flush();
+  gpsSerial.begin(115200, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  delay(100);
+  
+  // Step 3: Set update rate to maximum (10Hz)
+  gpsSerial.println("$PMTK220,100*2F");
+  delay(100);
+  
+  // Step 4: Select only the essential NMEA sentences
+  // Enable RMC (position, velocity, time) and GGA (fix data)
+  // Disable all others to maximize bandwidth efficiency
+  gpsSerial.println("$PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28");
+  delay(100);
+  
+  // Step 5: Enable SBAS (Satellite-Based Augmentation System) for improved accuracy
+  gpsSerial.println("$PMTK313,1*2E");
+  delay(100);
+  
+  // Step 6: Enable SBAS satellites for ranging (use in position calculation)
+  gpsSerial.println("$PMTK301,2*2E");
+  delay(100);
+  
+  // Step 7: Set navigation mode to Aviation (less filtering, more responsive)
+  // Note: This is a u-blox specific UBX command
+  // CFG-NAV5 message with Aviation dynamics model (8)
+  uint8_t cfgNav5[] = {
+    0xB5, 0x62, 0x06, 0x24, 0x24, 0x00, 0xFF, 0xFF, 0x08, 0x03, 0x00, 0x00, 0x00, 0x00, 
+    0x10, 0x27, 0x00, 0x00, 0x05, 0x00, 0xFA, 0x00, 0xFA, 0x00, 0x64, 0x00, 0x2C, 0x01, 
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0xDC
+  };
+  
+  for (int i = 0; i < sizeof(cfgNav5); i++) {
+    gpsSerial.write(cfgNav5[i]);
+  }
+  delay(250);
+  
+  Serial.println("GPS configured for optimal rocket state estimation");
+  Serial.println("- Update rate: 10Hz");
+  Serial.println("- Baud rate: 115200");
+  Serial.println("- NMEA sentences: RMC, GGA only");
+  Serial.println("- SBAS enabled for improved accuracy");
+  Serial.println("- Aviation dynamic mode for better response");
+}
+
+void updateLedStatus() {
+  if (!mpuStatus || !bmpStatus || !compassStatus) {
+    // Error state - one or more sensors failed to initialize
+    pixel.setPixelColor(0, COLOR_ERROR);
+  } else if (gpsStatus) {
+    // Success state - all sensors working and GPS has fix
+    pixel.setPixelColor(0, COLOR_SUCCESS);
+  } else if (gpsDataReceived) {
+    // Receiving NMEA data but no fix yet
+    pixel.setPixelColor(0, COLOR_GPS_DATA);
+  } else {
+    // Waiting state - waiting for GPS data
+    pixel.setPixelColor(0, COLOR_WAITING);
+  }
+  pixel.show();
+}
+
+void readGY87Data() {
+  // Read MPU6050 data
+  if (mpuStatus) {
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+    // Data is stored in the sensors_event_t structures
+  }
+  
+  // Read BMP085 data
+  if (bmpStatus) {
+    sensors_event_t event;
+    bmp.getEvent(&event);
+  }
+  
+  // Read Compass data
+  if (compassStatus) {
+    compass.read();
+  }
+}
+
+void readGPSData() {
+  nmeaLineComplete = false;
+  nmeaBuffer = "";
+  
+  // Read GPS data
+  while (gpsSerial.available() > 0) {
+    char c = gpsSerial.read();
+    
+    // Update timestamp for last character received
+    lastGpsCharTime = millis();
+    gpsDataReceived = true;
+    
+    // Add character to NMEA buffer for debugging
+    if (c == '\r') {
+      // Ignore carriage returns
+    } else if (c == '\n') {
+      // End of NMEA sentence
+      nmeaLineComplete = true;
+      
+      // Print raw NMEA data for debugging
+      Serial.print("NMEA: ");
+      Serial.println(nmeaBuffer);
+      nmeaBuffer = "";
+    } else {
+      nmeaBuffer += c;
+    }
+    
+    // Process with TinyGPS++
+    if (gps.encode(c)) {
+      // Check if we have a valid GPS fix
+      if (gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
+        gpsStatus = true;
+      } else {
+        gpsStatus = false;
+      }
+    }
+  }
+}
+
+void addGPSDiagnostics() {
+  // Update satellite statistics
+  if (gps.satellites.isValid()) {
+    if (gps.satellites.value() > maxSatellitesEverSeen) {
+      maxSatellitesEverSeen = gps.satellites.value();
+    }
+  }
+  
+  // Print diagnostic info every 30 seconds
+  if (millis() - lastDiagnosticsTime > 30000) {
+    lastDiagnosticsTime = millis();
+    
+    Serial.println("\n--- GPS DIAGNOSTICS ---");
+    Serial.print("Maximum satellites ever seen: ");
+    Serial.println(maxSatellitesEverSeen);
+    
+    if (maxSatellitesEverSeen == 0) {
+      Serial.println("DIAGNOSIS: No satellites detected at all. Likely causes:");
+      Serial.println("1. Antenna issue (disconnected, damaged)");
+      Serial.println("2. Very poor location with no sky visibility");
+      Serial.println("3. Module hardware failure");
+      Serial.println("ACTION: Try a different antenna or location");
+    } else if (maxSatellitesEverSeen < 3) {
+      Serial.println("DIAGNOSIS: Some satellites detected but not enough for a fix");
+      Serial.println("1. Antenna is working but reception is very poor");
+      Serial.println("2. Location has limited sky visibility");
+      Serial.println("ACTION: Try improving antenna position or move to better location");
+    } else if (maxSatellitesEverSeen >= 3 && !gps.location.isValid()) {
+      Serial.println("DIAGNOSIS: Enough satellites detected but no fix acquired");
+      Serial.println("1. Poor signal quality or satellite geometry");
+      Serial.println("2. Need more time to acquire fix");
+      Serial.println("ACTION: Wait longer or try slightly different antenna position");
+    }
+    
+    Serial.println("------------------------\n");
+  }
+}
+
+void printSensorData() {
+  static unsigned long lastPrintTime = 0;
+  
+  // Only print every second to avoid flooding serial monitor
+  if (millis() - lastPrintTime < 1000) {
+    return;
+  }
+  
+  lastPrintTime = millis();
+  
+  Serial.println("------------------------------------");
+  Serial.println("Sensor Readings:");
+  
+  // Print MPU6050 data
+  if (mpuStatus) {
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+    
+    Serial.println("MPU6050:");
+    Serial.print("  Acceleration (m/s²): X=");
+    Serial.print(a.acceleration.x);
+    Serial.print(", Y=");
+    Serial.print(a.acceleration.y);
+    Serial.print(", Z=");
+    Serial.println(a.acceleration.z);
+    
+    Serial.print("  Rotation (rad/s): X=");
+    Serial.print(g.gyro.x);
+    Serial.print(", Y=");
+    Serial.print(g.gyro.y);
+    Serial.print(", Z=");
+    Serial.println(g.gyro.z);
+    
+    Serial.print("  Temperature: ");
+    Serial.print(temp.temperature);
+    Serial.println(" °C");
+  } else {
+    Serial.println("MPU6050: Not available");
+  }
+  
+  // Print BMP085 data
+  if (bmpStatus) {
+    sensors_event_t event;
+    bmp.getEvent(&event);
+    
+    Serial.println("BMP085:");
+    if (event.pressure) {
+      Serial.print("  Pressure: ");
+      Serial.print(event.pressure);
+      Serial.println(" hPa");
+      
+      float seaLevelPressure = SENSORS_PRESSURE_SEALEVELHPA;
+      float altitude = bmp.pressureToAltitude(seaLevelPressure, event.pressure);
+      Serial.print("  Altitude: ");
+      Serial.print(altitude);
+      Serial.println(" m");
+    } else {
+      Serial.println("  Pressure sensor error");
+    }
+    
+    float temperature;
+    bmp.getTemperature(&temperature);
+    Serial.print("  Temperature: ");
+    Serial.print(temperature);
+    Serial.println(" °C");
+  } else {
+    Serial.println("BMP085: Not available");
+  }
+  
+  // Print Compass data
+  if (compassStatus) {
+    Serial.println("QMC5883L Compass:");
+    Serial.print("  X: ");
+    Serial.print(compass.getX());
+    Serial.print("  Y: ");
+    Serial.print(compass.getY());
+    Serial.print("  Z: ");
+    Serial.println(compass.getZ());
+    
+    Serial.print("  Azimuth: ");
+    Serial.print(compass.getAzimuth());
+    Serial.println(" degrees");
+    
+    const char* directions[] = {"North", "North-East", "East", "South-East", "South", "South-West", "West", "North-West"};
+    Serial.print("  Direction: ");
+    Serial.println(directions[compass.getBearing(compass.getAzimuth())]);
+  } else {
+    Serial.println("QMC5883L Compass: Not available");
+  }
+  
+  // Print GPS data
+  Serial.println("GPS Module:");
+  if (gpsStatus) {
+    Serial.print("  Location: ");
+    Serial.print(gps.location.lat(), 6);
+    Serial.print(", ");
+    Serial.println(gps.location.lng(), 6);
+    
+    Serial.print("  Altitude: ");
+    Serial.print(gps.altitude.meters());
+    Serial.println(" m");
+    
+    Serial.print("  Date/Time: ");
+    Serial.print(gps.date.year());
+    Serial.print("-");
+    Serial.print(gps.date.month());
+    Serial.print("-");
+    Serial.print(gps.date.day());
+    Serial.print(" ");
+    Serial.print(gps.time.hour());
+    Serial.print(":");
+    Serial.print(gps.time.minute());
+    Serial.print(":");
+    Serial.println(gps.time.second());
+    
+    Serial.print("  Speed: ");
+    Serial.print(gps.speed.kmph());
+    Serial.println(" km/h");
+    
+    Serial.print("  Course: ");
+    Serial.print(gps.course.deg());
+    Serial.println(" degrees");
+    
+    Serial.print("  Satellites: ");
+    Serial.println(gps.satellites.value());
+  } else if (gpsDataReceived) {
+    Serial.println("  Receiving NMEA data but no GPS fix yet");
+    Serial.println("  GPS satellite signal acquisition in progress...");
+    
+    // Print satellites in view if available
+    if (gps.satellites.isValid()) {
+      Serial.print("  Satellites in view: ");
+      Serial.println(gps.satellites.value());
+    }
+  } else {
+    Serial.println("  No GPS data received!");
+    Serial.println("  Check wiring connections to GPS module");
+  }
+  
+  Serial.println("------------------------------------");
+}

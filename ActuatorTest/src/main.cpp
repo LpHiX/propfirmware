@@ -31,9 +31,9 @@ bool servos_armed[16] = {false};
 bool solenoids_armed[7] = {false};
 bool solenoids_powered[7] = {false};
 int solenoids_GPIOS[7] = {1, 2, 42, 41, 40, 39, 38};
-bool pyros_armed[3] = {false};
-bool pyros_powered[3] = {false};
-int pyros_GPIOS[3] = {48, 47, 21};
+bool pyros_armed[2] = {false};
+bool pyros_powered[2] = {false};
+int pyros_GPIOS[2] = {47, 21};
 
 // Initialize NeoPixel object
 Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -95,7 +95,7 @@ void loop() {
 
 
 
-    Serial.print("Received: ");
+    Serial.println("Received: ");
     Serial.println(buffer);
 
     if (bytesRead > 0) {
@@ -105,6 +105,7 @@ void loop() {
       JsonDocument responseDoc;
       responseDoc["servos"] = JsonObject();
       responseDoc["solenoids"] = JsonObject();
+      responseDoc["pyros"] = JsonObject();
       if (error) {
         Serial.print("failed");
         Serial.println(error.f_str());
@@ -166,32 +167,40 @@ void loop() {
           responseDoc["solenoids"][solenoidName]["powered"] = solenoids_powered[channel];
         }
 
-        // JsonObject pyro_response = responseDoc["pyros"].to<JsonObject>();
-        // JsonObject pyros = doc["pyros"].to<JsonObject>();
-        // for (JsonPair pyro : pyros) {
-        //   const char* pyroName = pyro.key().c_str();
-        //   JsonObject pyroData = pyro.value().as<JsonObject>();
-        //   int channel = pyroData["channel"];
-        //   bool armed_desired = pyroData["armed"];
-        //   bool powered_desired = pyroData["powered"];
+        JsonObject pyros = doc["pyros"].as<JsonObject>();
+        for (JsonPair pyro : pyros) {
+          const char* pyroName = pyro.key().c_str();
+          JsonObject pyroData = pyro.value().as<JsonObject>();
+          int channel = pyroData["channel"];
 
-        //   pyros_armed[channel] = armed_desired;
-        //   responseDoc["pyros"][pyroName]["armed"] = pyros_armed[channel];
-        //   if (pyros_armed[channel]) {
-        //     pinMode(pyros_GPIOS[channel], OUTPUT);
-        //     digitalWrite(pyros_GPIOS[channel], powered_desired ? HIGH : LOW);
-        //     pyros_powered[channel] = powered_desired;
-        //   } else {
-        //     pinMode(pyros_GPIOS[channel], INPUT); // Set to input to disable power
-        //     pyros_powered[channel] = false; // Reset powered state when not armed
-        //   }
-        //   responseDoc["pyros"][pyroName]["powered"] = pyros_powered[channel];
+          if (channel < 0 || channel > 2) {
+            continue;
+          }
+          if (pyroData.containsKey("armed")){
+            bool armed_desired = pyroData["armed"];
+            pyros_armed[channel] = armed_desired;
+          }
+          if (pyros_armed[channel]) {
+            if (pyroData.containsKey("powered")){
+              bool powered_desired = pyroData["powered"];
+              pinMode(pyros_GPIOS[channel], OUTPUT);
+              digitalWrite(pyros_GPIOS[channel], powered_desired ? HIGH : LOW);
+              pyros_powered[channel] = powered_desired;
+            } 
+          } else {
+            pinMode(pyros_GPIOS[channel], INPUT); 
+            pyros_powered[channel] = false;
+          }
 
-        // }
+          responseDoc["pyros"][pyroName]["armed"] = pyros_armed[channel];
+          responseDoc["pyros"][pyroName]["powered"] = pyros_powered[channel];
+        }
+
         responseDoc["send_id"] = doc["send_id"];
         serializeJson(responseDoc, Serial2);
         Serial2.println(); // Send a newline after the JSON response
-        serializeJson(responseDoc, Serial);
+        //Serial.println("Sending:");
+        //serializeJson(responseDoc, Serial);
       }
     }
 

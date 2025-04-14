@@ -241,9 +241,43 @@ class SolenoidControllerWidget(ActuatorControllerWidget):
         except KeyError:
             self.powered_label.setText("Powered: No data")
 
+class PyroControllerWidget(ActuatorControllerWidget):
+    def __init__(self, config, board_name, actuator_name, udpmanager):
+        super().__init__(config, board_name, actuator_name, "pyros", udpmanager)
+    
+    def get_actuator_type_name(self):
+        return "Pyro"
+    
+    def setup_specific_ui(self):
+        # Pyro-specific UI elements
+        self.powered_label = QLabel("Powered: No data")
+        self.powered_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.powered_label)
+        
+        self.poweron_button = QPushButton("Power On")
+        self.poweron_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweron_button.clicked.connect(lambda: self.send_command("powered", True))
+        
+        self.poweroff_button = QPushButton("Power Off")
+        self.poweroff_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweroff_button.clicked.connect(lambda: self.send_command("powered", False))
+        
+        self.layout.addWidget(self.poweron_button)
+        self.layout.addWidget(self.poweroff_button)
+    
+    def update_specific_states(self, states):
+        #print(f"Updating states for {self.actuator_name}: {states}")
+        try:
+            powered = states[self.actuator_type][self.actuator_name]["powered"]
+            self.powered_label.setText(f"Powered: {powered}")
+        except KeyError:
+            self.powered_label.setText("Powered: No data")
+colors = ['y', 'r', 'c', 'b', 'm', 'y', 'k']
+pt_number = 0
 class SensorControllerWidget(QWidget):
     """"Base class for all sensor controller widgets"""
-    def __init__(self, config, sensor_default_data, board_name, sensor_name, sensor_type, udpmanager):
+    def __init__(self, config, sensor_default_data, board_name, sensor_name, sensor_type, udpmanager, testapp):
+        global pt_number  # Add this line to access the global pt_number variable
         super().__init__()
         self.config = config
         self.sensor_default_data = sensor_default_data
@@ -251,12 +285,13 @@ class SensorControllerWidget(QWidget):
         self.sensor_name = sensor_name
         self.sensor_type = sensor_type  # "pts", "tcs", etc.
         self.udpmanager = udpmanager
+        self.testapp = testapp
         
         # Define standard widths
         self.LABEL_WIDTH = 100
         
         # Create common layout
-        self.layout = QHBoxLayout()
+        self.layout = QVBoxLayout()
         self.setLayout(self.layout)
         
         # Create common UI elements
@@ -270,7 +305,8 @@ class SensorControllerWidget(QWidget):
         for value_name, _ in self.sensor_default_data.items():
             self.values[value_name] = {"value": "No data"}
             self.values[value_name]["label"] = QLabel(f"{value_name}: No data")
-            self.values[value_name]["label"].setFixedWidth(self.LABEL_WIDTH)
+            self.values[value_name]["label"].setStyleSheet("font-size: 40px;")
+            self.values[value_name]["label"].setFixedWidth(self.LABEL_WIDTH + 100)
             self.values[value_name]["history"] = deque(maxlen=self.MAX_HISTORY_SIZE)
             
             # Preallocate arrays for improved performance
@@ -282,7 +318,10 @@ class SensorControllerWidget(QWidget):
             self.vertical_layout.addWidget(self.values[value_name]["label"])
 
             self.values[value_name]["plot"] = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
-            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen('y', width=2))
+            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(colors[pt_number], width=2))
+            if sensor_type == "pts":
+                self.values[value_name]["pressurecurve"] = self.testapp.pressureplot.plot(pen=pg.mkPen(colors[pt_number], width=2), name=sensor_name)
+            pt_number += 1
             self.vertical_layout.addWidget(self.values[value_name]["plot"])
 
             self.layout.addLayout(self.vertical_layout)
@@ -321,9 +360,14 @@ class SensorControllerWidget(QWidget):
         
         # Use preallocated arrays for plotting
         self.values[value_name]["curve"].setData(
-            time_array[max(0, size-100):size], 
-            value_array[max(0, size-100):size]
+            (time_array[max(0, size-200):size] - time_array[size-1]) / 1000, 
+            value_array[max(0, size-200):size]
         )
+        if self.sensor_type == "pts":
+            self.values[value_name]["pressurecurve"].setData(
+                (time_array[:size] - time_array[0]) / 1000, 
+                value_array[:size]
+            )
 
     def update_states(self, states):
         for value_name, value_dict in self.values.items():
@@ -338,7 +382,7 @@ class SensorControllerWidget(QWidget):
                     value = (value - offset) * gain
                 
                 # Update the label
-                value_label.setText(f"Value: {value}")
+                value_label.setText(f"{value:.2f}")
                 
                 # Add to the history deque
                 if value is None:
@@ -365,10 +409,13 @@ class PropertyTestApp(QMainWindow):
         self.setCentralWidget(self.tab_widget)  
 
         self.main_tab = QWidget()
-        self.pressure_tab = QWidget()
         self.tab_widget.addTab(self.main_tab, "Main")
-        self.tab_widget.addTab(self.pressure_tab, "Pressure")
         self.main_layout = QHBoxLayout(self.main_tab)
+        
+        self.pressure_tab = QWidget()
+        self.tab_widget.addTab(self.pressure_tab, "Pressure")
+        self.pressure_layout = QVBoxLayout(self.pressure_tab)
+
 
         #container = QWidget()
         #container.setLayout(self.main_layout)
@@ -379,9 +426,9 @@ class PropertyTestApp(QMainWindow):
         self.last_update_time = None
         self.last_state_update_label = QLabel("Last state update: Never")
         self.last_state_update_label.setFixedWidth(200)
-        self.last_update_timer = QTimer(self)
-        self.last_update_timer.timeout.connect(self.update_last_state_update_label)
-        self.last_update_timer.start(100)
+        self.backend_state_timer = QTimer(self)
+        self.backend_state_timer.timeout.connect(self.backend_state_coroutine)
+        self.backend_state_timer.start(100)
         self.manual_command = QTextEdit(self)
         self.manual_response = QTextEdit(self)
         self.manual_response.setReadOnly(True)
@@ -394,9 +441,33 @@ class PropertyTestApp(QMainWindow):
         self.manual_command_layout.addWidget(self.manual_response)
 
         self.preset_commands_layout = QVBoxLayout()
+        
+        self.datetime_str = "Request timer didn't load"
+        self.datetime_label = QLabel(f"Backend Time: {self.datetime_str}")
+        self.preset_commands_layout.addWidget(self.datetime_label)
+
+        self.hotfiretime_str = "Request timer didn't load"
+        self.hotfiretime_label = QLabel(self.hotfiretime_str)
+        self.hotfiretime_label.setStyleSheet("font-size: 60px;")
+        self.preset_commands_layout.addWidget(self.hotfiretime_label)
+
+        self.statemachine_str = "Request timer didn't load"
+        self.statemachine_label = QLabel("Machine state: {self.statemachine_str}")
+        self.preset_commands_layout.addWidget(self.statemachine_label)
+
+        self.abort_button = QPushButton("Abort")
+        self.abort_button.setStyleSheet("font-size: 60px;")
+        self.abort_button.setFixedHeight(300)
+        self.abort_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"abort engine", "data":{}})))
+        self.preset_commands_layout.addWidget(self.abort_button)
+
         self.hotfire_button = QPushButton("Hotfire")
         self.hotfire_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"start hotfire sequence", "data":{}})))
         self.preset_commands_layout.addWidget(self.hotfire_button)
+
+        self.return_from_idle_button = QPushButton("Return to Idle")
+        self.return_from_idle_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"return to idle", "data":{}})))
+        self.preset_commands_layout.addWidget(self.return_from_idle_button)
 
         self.reload_hardware_json = QPushButton("Reload Hardware JSON")
         self.reload_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"reload hardware json", "data":{}})))
@@ -424,13 +495,47 @@ class PropertyTestApp(QMainWindow):
         self.main_layout.addLayout(self.actuators_sensors_area)
         self.main_layout.addLayout(self.commands_layout)
 
+        
+
+
+        self.pressureplot = pg.PlotWidget(title="Pressure")
+        self.pressureplot.addLegend()
+        self.pressure_layout.addWidget(self.pressureplot)
+
+
         self.udp_manager = UDPManager(self.host, self.port)
         self.udp_manager.dataReceived.connect(self.handle_data_received)
 
         self.commands_responses = {
             "get hardware json": self.hardware_json_received,
             "get boards states": self.boards_states_received,
+            "get state": self.machinestate_received,
+            "get time": self.time_received
         }
+    def time_received(self, responsestr):
+        try:
+            response = json.loads(responsestr)["response"]
+        except json.JSONDecodeError:
+            print("Time is not valid JSON")
+            return
+        if "date_time" in response:
+            self.datetime_str = response["date_time"]
+            self.datetime_label.setText(f"Backend Time: {self.datetime_str}")
+        else:
+            print("No date_time in response")
+        if "hotfire_time" in response:
+            self.hotfiretime_str = response["hotfire_time"]
+            self.hotfiretime_label.setText(f"{self.hotfiretime_str}")
+        else:
+            print("No hotfire_time in response")
+
+    def machinestate_received(self, response):
+        try:
+            self.statemachine_str = json.loads(response)["response"]
+            self.statemachine_label.setText(f"Machine state: {self.statemachine_str}")
+        except json.JSONDecodeError:
+            print("Machine state is not valid JSON")
+            return
     def handle_data_received(self, data):
         try:
             data = json.loads(data)
@@ -481,6 +586,7 @@ class PropertyTestApp(QMainWindow):
         default_actuator_types = {
             "servos": ServoControllerWidget,
             "solenoids": SolenoidControllerWidget,
+            "pyros": PyroControllerWidget
         }
 
         for board_name, board_config in self.hardware_json["boards"].items():
@@ -507,7 +613,7 @@ class PropertyTestApp(QMainWindow):
                         sensor_mainlayout.addLayout(sensor_layout)
                         sensors_layout.append(sensor_layout)
                         for sensor_name, _ in board_config[sensor_type].items():
-                            sensor_controller_widget = SensorControllerWidget(board_config, sensor_default_data, board_name, sensor_name, sensor_type, self.udp_manager)
+                            sensor_controller_widget = SensorControllerWidget(board_config, sensor_default_data, board_name, sensor_name, sensor_type, self.udp_manager, self)
                             sensor_layout.addWidget(sensor_controller_widget)
                             self.sensor_list.append(sensor_controller_widget)
         sensor_mainlayout.addStretch()
@@ -548,7 +654,9 @@ class PropertyTestApp(QMainWindow):
             self.udp_manager.send(command)
         except json.JSONDecodeError:
             self.manual_response.append("Invalid JSON format")
-    def update_last_state_update_label(self):
+    def backend_state_coroutine(self):
+        self.udp_manager.send(json.dumps({"command":"get state", "data":{}}))
+        self.udp_manager.send(json.dumps({"command":"get time", "data":{}}))
         if self.last_update_time is not None:
             current_time = QDateTime.currentDateTime()
             elapsed_time = self.last_update_time.msecsTo(current_time)

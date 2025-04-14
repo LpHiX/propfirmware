@@ -1,0 +1,210 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_MPU6050.h>
+#include <QMC5883LCompass.h> // Changed from HMC5883L to QMC5883L
+#include <Adafruit_BMP085_U.h>
+#include <Adafruit_NeoPixel.h>
+
+// Sensor objects
+Adafruit_MPU6050 mpu;
+QMC5883LCompass compass; // Changed magnetometer object
+Adafruit_BMP085_Unified bmp = Adafruit_BMP085_Unified(10085);
+
+// NeoPixel configuration
+#define NEOPIXEL_PIN      48
+#define NEOPIXEL_COUNT    1
+#define BLINK_INTERVAL    5000  // 5 seconds between blinks
+Adafruit_NeoPixel pixels(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+unsigned long lastBlinkTime = 0;
+bool pixelState = false;
+
+// Sensor status flags
+bool mpuReady = false;
+bool magReady = false;
+bool bmpReady = false;
+
+// Define I2C pins (adjust these values based on your specific board and needs)
+
+const int SDA_PIN = 16; // Default SDA pin on ESP32
+const int SCL_PIN = 17; // Default SCL pin on ESP32
+
+String getCardinalDirection(float azimuth) {
+  if (azimuth >= 337.5 || azimuth < 22.5) return "N";
+  if (azimuth >= 22.5 && azimuth < 67.5) return "NE";
+  if (azimuth >= 67.5 && azimuth < 112.5) return "E";
+  if (azimuth >= 112.5 && azimuth < 157.5) return "SE";
+  if (azimuth >= 157.5 && azimuth < 202.5) return "S";
+  if (azimuth >= 202.5 && azimuth < 247.5) return "SW";
+  if (azimuth >= 247.5 && azimuth < 292.5) return "W";
+  if (azimuth >= 292.5 && azimuth < 337.5) return "NW";
+  return "?";
+}
+
+void setup() {
+  // Initialize serial for debugging
+  Serial.begin(115200);
+  while (!Serial) delay(10); // Wait for serial console
+  
+  Serial.println("GY-87 10DOF Sensor Test");
+  
+  // Initialize NeoPixel
+  pixels.begin();
+  pixels.clear();
+  pixels.show();
+  Serial.printf("NeoPixel initialized on pin %d\n", NEOPIXEL_PIN);
+  
+  // Initialize I2C with custom pins
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Serial.printf("I2C initialized with custom pins: SDA=%d, SCL=%d\n", SDA_PIN, SCL_PIN);
+
+  
+  // Initialize MPU6050
+  if (mpu.begin()) {
+    Serial.println("MPU6050 found!");
+    mpuReady = true;
+    
+    // MPU6050 settings
+    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    
+    // Enable I2C bypass to access HMC5883L
+    Wire.beginTransmission(0x68); // MPU6050 address
+    Wire.write(0x37);             // Register: INT_PIN_CFG
+    Wire.write(0x02);             // Enable I2C bypass
+    Wire.endTransmission(true);
+  } else {
+    Serial.println("Failed to find MPU6050!");
+  }
+  
+  delay(50); // Wait for bypass to take effect
+  
+  // Initialize QMC5883L
+  compass.init();
+  // Optional settings
+  compass.setCalibration(-1000, 1000, -1000, 1000, -1000, 1000); // Example calibration values
+  compass.setSmoothing(10, true); // Set averaging
+  
+  // Check if QMC5883L responds
+  compass.read();
+  if (compass.getX() != 0 || compass.getY() != 0 || compass.getZ() != 0) {
+    Serial.println("QMC5883L found!");
+    magReady = true;
+  } else {
+    Serial.println("Failed to find QMC5883L!");
+  }
+  
+  // Initialize BMP180
+  if (bmp.begin()) {
+    Serial.println("BMP180 found!");
+    bmpReady = true;
+  } else {
+    Serial.println("Failed to find BMP180!");
+  }
+  
+  // Initialize NeoPixel
+  pixels.begin();
+  pixels.show(); // Initialize all pixels to 'off'
+  
+  Serial.println("Setup complete.");
+}
+
+void loop() {
+  // Check if it's time to blink the NeoPixel
+  unsigned long currentTime = millis();
+  if (currentTime - lastBlinkTime >= BLINK_INTERVAL) {
+    lastBlinkTime = currentTime;
+    pixelState = !pixelState;
+    
+    if (pixelState) {
+      pixels.setPixelColor(0, pixels.Color(0, 150, 0));  // Green
+    } else {
+      pixels.clear();
+    }
+    pixels.show();
+  }
+  
+  // Variables to store sensor data
+  sensors_event_t a, g, temp, pressure;
+  
+  // Read MPU6050 data
+  if (mpuReady) {
+    mpu.getEvent(&a, &g, &temp);
+    
+    Serial.println("MPU6050 Data:");
+    Serial.print("Acceleration (m/s^2): X=");
+    Serial.print(a.acceleration.x);
+    Serial.print(", Y=");
+    Serial.print(a.acceleration.y);
+    Serial.print(", Z=");
+    Serial.println(a.acceleration.z);
+    
+    Serial.print("Rotation (rad/s): X=");
+    Serial.print(g.gyro.x);
+    Serial.print(", Y=");
+    Serial.print(g.gyro.y);
+    Serial.print(", Z=");
+    Serial.println(g.gyro.z);
+    
+    Serial.print("Temperature: ");
+    Serial.print(temp.temperature);
+    Serial.println(" °C");
+  }
+  
+  // Read QMC5883L data
+  if (magReady) {
+    compass.read();
+    
+    int x = compass.getX();
+    int y = compass.getY();
+    int z = compass.getZ();
+    
+    Serial.println("QMC5883L Data:");
+    Serial.print("Magnetic: X=");
+    Serial.print(x);
+    Serial.print(", Y=");
+    Serial.print(y);
+    Serial.print(", Z=");
+    Serial.println(z);
+    
+    // Calculate heading (in degrees)
+    float heading = compass.getAzimuth();
+    
+    // Get cardinal direction using our custom function
+    String cardinalDirection = getCardinalDirection(heading);
+    
+    Serial.print("Heading: ");
+    Serial.print(heading);
+    Serial.println(" degrees");
+    Serial.print("Direction: ");
+    Serial.println(cardinalDirection);
+  }
+  
+  // Read BMP180 data
+  if (bmpReady) {
+    bmp.getEvent(&pressure);
+    
+    Serial.println("BMP180 Data:");
+    if (pressure.pressure) {
+      Serial.print("Pressure: ");
+      Serial.print(pressure.pressure);
+      Serial.println(" hPa");
+      
+      float temperature;
+      bmp.getTemperature(&temperature);
+      Serial.print("Temperature: ");
+      Serial.print(temperature);
+      Serial.println(" °C");
+      
+      float seaLevelPressure = 1013.25; // standard pressure at sea level in hPa
+      float altitude = bmp.pressureToAltitude(seaLevelPressure, pressure.pressure);
+      Serial.print("Altitude: ");
+      Serial.print(altitude);
+      Serial.println(" m");
+    }
+  }
+  
+  Serial.println("------------------------");
+  delay(100); // Update every second
+}
