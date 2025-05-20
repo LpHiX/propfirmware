@@ -428,7 +428,7 @@ class PropertyTestApp(QMainWindow):
         self.last_state_update_label.setFixedWidth(200)
         self.backend_state_timer = QTimer(self)
         self.backend_state_timer.timeout.connect(self.backend_state_coroutine)
-        self.backend_state_timer.start(100)
+        self.backend_state_timer.start(10)
         self.manual_command = QTextEdit(self)
         self.manual_response = QTextEdit(self)
         self.manual_response.setReadOnly(True)
