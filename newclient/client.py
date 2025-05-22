@@ -1,13 +1,18 @@
 from PySide6.QtWidgets import (QApplication)
+from clientapp import ClientApp
+from udpclient import UDPClient
 import sys
 import signal
 
 if __name__ == "__main__":
-    host = "192.168.137.216"
+    # host = "192.168.137.216"
+    host = 'localhost'
     port = 8888
 
     app = QApplication(sys.argv)
-    window = PropertyTestApp(host, port)
+
+    udpclient = UDPClient(host, port)
+    window = ClientApp()
     window.show()
 
     def signal_handler(sig, frame):

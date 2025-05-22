@@ -669,7 +669,8 @@ class PropertyTestApp(QMainWindow):
             self.last_state_update_label.setStyleSheet("color: red")
 
 if __name__ == "__main__":
-    host = "192.168.137.216"
+    # host = "192.168.137.216"
+    host = "127.0.0.1"
     port = 8888
 
     app = QApplication(sys.argv)

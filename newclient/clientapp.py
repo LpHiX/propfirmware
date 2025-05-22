@@ -1,10 +1,8 @@
+from PySide6.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QGroupBox
 
-
-class PropertyTestApp(QMainWindow):
-    def __init__(self, host, port):
+class ClientApp(QMainWindow):
+    def __init__(self):
         super().__init__()
-        self.host = host
-        self.port = port
         self.hardware_json = None
         self.state_defaults: dict = {}
         self.hardware_types: list[str] = []
