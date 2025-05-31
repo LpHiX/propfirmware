@@ -131,8 +131,8 @@ void loop() {
 
 
   adc_mvs[0] = readChannel(0);
-  // adc_mvs[1] = readChannel(1);
-  // adc_mvs[2] = readChannel(2);
+  adc_mvs[1] = readChannel(1);
+  adc_mvs[2] = readChannel(2);
   // adc_mvs[3] = readChannel(3);
 
 

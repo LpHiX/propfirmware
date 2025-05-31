@@ -10,7 +10,7 @@ import pyqtgraph.opengl as gl
 import sys
 
 # Constants
-COM_PORT = 'COM6'
+COM_PORT = 'COM8'
 BAUD_RATE = 115200
 GYRO_BIAS = np.array([0.04, 0.0, -0.04])  # Given gyro bias
 G = 9.81  # Gravity constant
@@ -338,7 +338,7 @@ class PCBVisualizer(QMainWindow):
         
         # Process noise
         self.ukf.Q = np.diag([0.0001, 0.0001, 0.0001, 0.0001,  # quaternion
-                              0.0001, 0.0001, 0.0001,          # gyro bias
+                              0.000 1, 0.0001, 0.0001,          # gyro bias
                               0.01, 0.01, 0.01,                # velocity
                               0.01, 0.01, 0.01,                # position
                               0.1, 0.1, 0.1])                  # acceleration (higher process noise)

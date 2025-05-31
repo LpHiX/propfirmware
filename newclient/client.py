@@ -12,7 +12,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     udpclient = UDPClient(host, port)
-    window = ClientApp()
+    window = ClientApp(udpclient)
     window.show()
 
     def signal_handler(sig, frame):

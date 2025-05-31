@@ -1,8 +1,18 @@
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QGroupBox
 
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtNetwork import QUdpSocket, QHostAddress
+from PySide6.QtCore import QTimer, QByteArray, Slot
+from PySide6.QtCore import Slot, QObject, Signal
+from PySide6.QtCore import QDateTime
+import json
+import pyqtgraph as pg
+
 class ClientApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, udp_client):
         super().__init__()
+        self.udp_client = udp_client
+        
         self.hardware_json = None
         self.state_defaults: dict = {}
         self.hardware_types: list[str] = []
@@ -109,7 +119,7 @@ class ClientApp(QMainWindow):
         self.pressure_layout.addWidget(self.pressureplot)
 
 
-        self.udp_manager = UDPManager(self.host, self.port)
+        self.udp_manager = UDPClient(self.host, self.port)
         self.udp_manager.dataReceived.connect(self.handle_data_received)
 
         self.commands_responses = {

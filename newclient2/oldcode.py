@@ -373,7 +373,6 @@ class SensorControllerWidget(QWidget):
         for value_name, value_dict in self.values.items():
             try:
                 value = states[self.sensor_type][self.sensor_name][value_name]
-                
                 value_label = value_dict["label"]
                 
                 # Apply calibration if available
@@ -383,10 +382,7 @@ class SensorControllerWidget(QWidget):
                     value = (value - offset) * gain
                 
                 # Update the label
-                if value is None:
-                    value_label.setText("Value: No data")
-                else:
-                    value_label.setText(f"{value:.2f}")
+                value_label.setText(f"{value:.2f}")
                 
                 # Add to the history deque
                 if value is None:
@@ -673,8 +669,8 @@ class PropertyTestApp(QMainWindow):
             self.last_state_update_label.setStyleSheet("color: red")
 
 if __name__ == "__main__":
-    host = "192.168.137.216"
-    # host = "127.0.0.1"
+    # host = "192.168.137.216"
+    host = "127.0.0.1"
     port = 8888
 
     app = QApplication(sys.argv)

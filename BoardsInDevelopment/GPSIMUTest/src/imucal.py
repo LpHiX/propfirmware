@@ -249,7 +249,7 @@ class SerialThread(QtCore.QThread):
             ser = None
             try:
                 self.log_signal.emit(f"Opening serial port... (attempt {retry_count+1}/{max_retry_attempts})")
-                ser = serial.Serial('COM6', 115200, timeout=1)
+                ser = serial.Serial('COM8', 115200, timeout=1)
                 self.log_signal.emit("Serial port opened, waiting for data")
                 retry_count = 0  # Reset count on successful connection
                 

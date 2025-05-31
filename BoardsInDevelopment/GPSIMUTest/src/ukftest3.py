@@ -8,7 +8,7 @@ import time
 from collections import deque  # For storing trail points
 
 # Constants
-COM_PORT = 'COM6'
+COM_PORT = 'COM8'
 BAUD_RATE = 115200
 GYRO_BIAS = np.array([0.04, 0.0, -0.04])  # Given gyro bias
 G = 9.81  # Gravity constant

@@ -28,12 +28,12 @@ bool ledState = false;  // false = red, true = green
 bool pwmInitialized = false;
 float servos_angles[16] = {0};
 bool servos_armed[16] = {false};
-bool solenoids_armed[7] = {false};
-bool solenoids_powered[7] = {false};
-int solenoids_GPIOS[7] = {1, 2, 42, 41, 40, 39, 38};
+bool solenoids_armed[8] = {false};
+bool solenoids_powered[8] = {false};
+int solenoids_GPIOS[8] = {1, 2, 42, 41, 40, 39, 38, 13}; // 42, 41, 39 IS BROKEN ?!?!?!?!
 bool pyros_armed[2] = {false};
 bool pyros_powered[2] = {false};
-int pyros_GPIOS[2] = {47, 21};
+int pyros_GPIOS[2] = {47, 21};//fstudent
 
 // Initialize NeoPixel object
 Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -144,7 +144,7 @@ void loop() {
           JsonObject solenoidData = solenoid.value().as<JsonObject>();
           int channel = solenoidData["channel"];
 
-          if (channel < 0 || channel > 6) {
+          if (channel < 0 || channel > 7) {
             continue;
           }
           if (solenoidData.containsKey("armed")){
@@ -176,6 +176,8 @@ void loop() {
           if (channel < 0 || channel > 2) {
             continue;
           }
+          pinMode(pyros_GPIOS[channel], OUTPUT);
+
           if (pyroData.containsKey("armed")){
             bool armed_desired = pyroData["armed"];
             pyros_armed[channel] = armed_desired;
@@ -183,13 +185,14 @@ void loop() {
           if (pyros_armed[channel]) {
             if (pyroData.containsKey("powered")){
               bool powered_desired = pyroData["powered"];
-              pinMode(pyros_GPIOS[channel], OUTPUT);
+              // pinMode(pyros_GPIOS[channel], OUTPUT);
               digitalWrite(pyros_GPIOS[channel], powered_desired ? HIGH : LOW);
               pyros_powered[channel] = powered_desired;
             } 
           } else {
-            pinMode(pyros_GPIOS[channel], INPUT); 
+            // pinMode(pyros_GPIOS[channel], INPUT); 
             pyros_powered[channel] = false;
+            digitalWrite(pyros_GPIOS[channel], LOW);
           }
 
           responseDoc["pyros"][pyroName]["armed"] = pyros_armed[channel];
