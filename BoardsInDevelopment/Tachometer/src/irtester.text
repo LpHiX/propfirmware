@@ -1,0 +1,79 @@
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+
+// Define the RGB LED pin
+#define RGB_LED_PIN 48
+#define NUM_PIXELS 1 // Just the one integrated LED
+
+#define TACHO_PIN 4
+#define BLADES 1
+
+volatile int64_t lastPulseTime = 0;
+volatile int64_t lastPrintTime = 0;
+volatile int64_t lastHeartbeatTime = 0;
+volatile int64_t pulseInterval = 0;
+
+volatile float rpm = 0;
+volatile bool newPulse = false;
+volatile bool newData = false;
+
+
+
+void IRAM_ATTR onPulse()
+{
+  int64_t now = esp_timer_get_time(); // µs since boot
+  int64_t dt = now - lastPulseTime;
+  if (dt > 100)
+  {
+    pulseInterval = dt;
+    newPulse = true;
+    lastPulseTime = now;
+  }
+}
+
+Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+
+void setup()
+{
+  pixel.begin();
+  pixel.setPixelColor(0, pixel.Color(255, 255, 0));
+  pixel.setBrightness(5);
+  pixel.show();
+  Serial.begin(921600);
+
+  pinMode(TACHO_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(TACHO_PIN), onPulse, FALLING);
+}
+
+void loop()
+{
+  int64_t currentTime = esp_timer_get_time();
+
+  if (newPulse)
+  {
+    noInterrupts();
+    int64_t interval = pulseInterval;
+    interrupts();
+    rpm = 60000000.0 / (interval * BLADES);
+    pixel.setPixelColor(0, pixel.Color(0, 255, 0));
+    pixel.show();
+    Serial.print("Interval: ");
+    Serial.print(interval);
+    Serial.print("     RPM: ");
+    Serial.println(rpm);
+    lastPrintTime = currentTime;
+    newPulse = false;
+  }
+
+  if (currentTime - lastPulseTime > 100000)
+  { // 1 second
+    pixel.setPixelColor(0, pixel.Color(255, 0, 0));
+    pixel.show();
+  }
+
+  if (currentTime - lastHeartbeatTime > 5000000)
+  {
+    Serial.println("Heartbeat");
+    lastHeartbeatTime = currentTime;
+  }
+}

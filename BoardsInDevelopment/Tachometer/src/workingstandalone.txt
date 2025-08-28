@@ -1,0 +1,167 @@
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+
+// Define the RGB LED pin
+#define RGB_LED_PIN 48
+#define NUM_PIXELS 1 // Just the one integrated LED
+
+#define TACHO_PIN 4
+#define BLADES 9
+
+volatile int64_t lastPulseTime = 0;
+volatile int64_t lastPrintTime = 0;
+volatile int64_t lastHeartbeatTime = 0;
+volatile int64_t pulseInterval = 0;
+volatile int64_t twoIntervals = 0;
+
+volatile int pulseCount = 0;
+volatile float rpm = 0;
+volatile bool newPulse = false;
+volatile bool newData = false;
+
+const int N = 9;
+int64_t intervals[N];
+int idx = 0;
+bool bufferFilled = false;
+
+int64_t medianOfArray(int64_t *a, int n)
+{
+  // simple insertion-sort copy then pick middle (n small)
+  int64_t b[N];
+  for (int i = 0; i < n; i++)
+    b[i] = a[i];
+  for (int i = 1; i < n; i++)
+  {
+    int64_t v = b[i];
+    int j = i - 1;
+    while (j >= 0 && b[j] > v)
+    {
+      b[j + 1] = b[j];
+      j--;
+    }
+    b[j + 1] = v;
+  }
+  return b[n / 2];
+}
+
+void IRAM_ATTR onPulse()
+{
+  int64_t now = esp_timer_get_time(); // µs since boot
+  int64_t dt = now - lastPulseTime;
+  if (dt > 1000)
+  {
+    pulseInterval += dt;
+    pulseCount++;
+
+    if (pulseCount == 2)
+    {
+      twoIntervals = pulseInterval;
+      pulseInterval = 0;
+      pulseCount = 0;
+      newPulse = true;
+      newData = true;
+    }
+  }
+
+  lastPulseTime = now; // µs
+}
+
+Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+
+void setup()
+{
+  pixel.begin();
+  pixel.setPixelColor(0, pixel.Color(255, 255, 0));
+  pixel.setBrightness(5);
+  pixel.show();
+  Serial.begin(921600);
+
+  pinMode(TACHO_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(TACHO_PIN), onPulse, FALLING);
+}
+
+void loop()
+{
+  int64_t currentTime = esp_timer_get_time();
+
+  if (newPulse)
+  {
+    noInterrupts();
+    int64_t interval = twoIntervals; // µs
+    newPulse = false;
+    interrupts();
+
+    int count = bufferFilled ? N : idx;
+
+    if (interval > 0)
+    {
+
+      intervals[idx] = interval;
+      idx = (idx + 1) % N;
+      if (idx == 0)
+        bufferFilled = true;
+      // compute median only when buffer has some data
+      int count = bufferFilled ? N : idx;
+      if (count >= 3)
+      { // wait at least 3 samples before median
+        int64_t med = medianOfArray(intervals, count);
+
+        // Optionally: reject very different sample vs median (extra guard)
+        if (twoIntervals < med * 7 / 10)
+        {
+          // sample suspiciously small -> ignore (double-count). Keep med instead.
+          twoIntervals = med;
+        }
+        else if (twoIntervals > med * 2)
+        {
+          // sample suspiciously large -> maybe missed pulse; use med (or accept depending on use).
+          twoIntervals = med;
+        }
+
+        // compute RPM from median (use med rather than the raw noisy sample)
+        int64_t rpm = 0;
+        if (med > 0)
+          rpm = 60000000.0 / (med * BLADES);
+
+        Serial.print("median interval(us): ");
+        Serial.print(med);
+        Serial.print("  RPM: ");
+        Serial.println(rpm);
+      }
+      else
+      {
+        // not enough samples yet — show raw estimate
+        int64_t rpm = 0;
+        if (twoIntervals > 0)
+          rpm = 60000000UL / (twoIntervals * BLADES);
+        Serial.print("raw interval(us): ");
+        Serial.print(twoIntervals);
+        Serial.print("  RPM: ");
+        Serial.println(rpm);
+      }
+
+      // rpm = 60.0 * 1000000.0 / interval / 9.0;
+
+      // pixel.setPixelColor(0, pixel.Color(0, 255, 0));
+      // pixel.show();
+      // Serial.print("Interval: ");
+      // Serial.print(interval);
+      // Serial.print("     RPM: ");
+      // Serial.println(rpm);
+      // lastPrintTime = currentTime;
+      // newData = false;
+    }
+  }
+
+  if (currentTime - lastPulseTime > 100000)
+  { // 1 second
+    pixel.setPixelColor(0, pixel.Color(255, 0, 0));
+    pixel.show();
+  }
+
+  if (currentTime - lastHeartbeatTime > 5000000)
+  {
+    Serial.println("Heartbeat");
+    lastHeartbeatTime = currentTime;
+  }
+}

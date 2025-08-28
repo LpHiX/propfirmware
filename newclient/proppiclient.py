@@ -15,6 +15,8 @@ import pyqtgraph as pg
 import numpy as np
 from collections import deque
 
+PLOT_SECONDS = 2
+
 class UDPManager(QObject):
     dataReceived = Signal(str)
     hardwareJsonStatusChanged = Signal(bool)
@@ -54,6 +56,9 @@ class UDPManager(QObject):
     def request_states(self):
         #print("Requesting boards states from backend")
         data = json.dumps({"command":"get boards states", "data":{}})
+        self.send(data)
+        # ALso request desired states
+        data = json.dumps({"command":"get boards desired states", "data":{}})
         self.send(data)
 
     @Slot()
@@ -100,9 +105,9 @@ class ActuatorControllerWidget(QWidget):
         self.udpmanager = udpmanager
         
         # Define standard widths
-        self.LABEL_WIDTH = 150
-        self.BUTTON_WIDTH = 100
-        self.INPUT_WIDTH = 100
+        self.LABEL_WIDTH = 100
+        self.BUTTON_WIDTH = 50
+        self.INPUT_WIDTH = 40
         
         # Create common layout
         self.layout = QHBoxLayout()
@@ -110,7 +115,7 @@ class ActuatorControllerWidget(QWidget):
         
         # Create common UI elements
         self.name_label = QLabel(f"{self.get_actuator_type_name()}: {self.actuator_name}")
-        self.name_label.setFixedWidth(self.LABEL_WIDTH + 150)
+        self.name_label.setFixedWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.name_label)
         
         # Armed state is common to most actuators
@@ -156,7 +161,11 @@ class ActuatorControllerWidget(QWidget):
         """Update widget with current states"""
         self.update_common_states(states)
         self.update_specific_states(states)
-    
+
+    def update_desired_states(self, desired_states):
+        """Update widget with desired states"""
+        self.update_specific_desired_states(desired_states)
+
     def setup_specific_ui(self):
         """Set up actuator-specific UI elements. Override in subclasses."""
         raise NotImplementedError("Subclasses must implement setup_specific_ui()")
@@ -168,6 +177,10 @@ class ActuatorControllerWidget(QWidget):
     def get_actuator_type_name(self):
         """Return human-readable actuator type name. Override in subclasses."""
         raise NotImplementedError("Subclasses must implement get_actuator_type_name()")
+
+    def update_specific_desired_states(self, desired_states):
+        """Update actuator-specific desired states. Override in subclasses. Does nothing if not implemented"""
+        pass
 
 class ServoControllerWidget(ActuatorControllerWidget):
     def __init__(self, config, board_name, servo_name, udpmanager):
@@ -181,6 +194,10 @@ class ServoControllerWidget(ActuatorControllerWidget):
         self.angle_label = QLabel("Angle: No data")
         self.angle_label.setFixedWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.angle_label)
+
+        self.desired_angle_label = QLabel("Desired Angle: No data")
+        self.desired_angle_label.setFixedWidth(self.LABEL_WIDTH)
+        self.layout.addWidget(self.desired_angle_label)
         
         self.manual_angle = QLineEdit(self)
         self.manual_angle.setFixedWidth(self.INPUT_WIDTH)
@@ -200,11 +217,18 @@ class ServoControllerWidget(ActuatorControllerWidget):
         except KeyError:
             self.angle_label.setText("Angle: No data")
     
+    def update_specific_desired_states(self, desired_states):
+        try:
+            desired_angle = desired_states[self.actuator_type][self.actuator_name]["angle"]
+            self.desired_angle_label.setText(f"Desired Angle: {desired_angle}")
+        except KeyError:
+            self.desired_angle_label.setText("Desired Angle: No data")
+
     def set_manual_angle(self):
         try:
             angle = int(self.manual_angle.text())
-            if angle < 0 or angle > 180:
-                raise ValueError("Angle must be between 0 and 180")
+            # if angle < 0 or angle > 180:
+                # raise ValueError("Angle must be between 0 and 180")
             self.send_command("angle", angle)
         except ValueError as e:
             print(f"Invalid angle: {e}")
@@ -313,16 +337,17 @@ class SensorControllerWidget(QWidget):
             self.values[value_name]["time_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
             self.values[value_name]["value_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
             self.values[value_name]["array_size"] = 0
-            
-            self.vertical_layout = QVBoxLayout()
-            self.vertical_layout.addWidget(self.values[value_name]["label"])
 
             self.values[value_name]["plot"] = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
             self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(colors[pt_number], width=2))
             if sensor_type == "pts":
                 self.values[value_name]["pressurecurve"] = self.testapp.pressureplot.plot(pen=pg.mkPen(colors[pt_number], width=2), name=sensor_name)
             pt_number += 1
+
+            self.vertical_layout = QVBoxLayout()
             self.vertical_layout.addWidget(self.values[value_name]["plot"])
+            self.vertical_layout.addWidget(self.values[value_name]["label"])
+
 
             self.layout.addLayout(self.vertical_layout)
             
@@ -360,8 +385,8 @@ class SensorControllerWidget(QWidget):
         
         # Use preallocated arrays for plotting
         self.values[value_name]["curve"].setData(
-            (time_array[max(0, size-200):size] - time_array[size-1]) / 1000, 
-            value_array[max(0, size-200):size]
+            (time_array[max(0, size-PLOT_SECONDS*100):size] - time_array[size-1]) / 1000, 
+            value_array[max(0, size-PLOT_SECONDS*100):size]
         )
         if self.sensor_type == "pts":
             self.values[value_name]["pressurecurve"].setData(
@@ -446,15 +471,6 @@ class PropertyTestApp(QMainWindow):
         self.manual_command_layout.addWidget(self.manual_response)
 
         self.preset_commands_layout = QVBoxLayout()
-        
-        self.datetime_str = "Request timer didn't load"
-        self.datetime_label = QLabel(f"Backend Time: {self.datetime_str}")
-        self.preset_commands_layout.addWidget(self.datetime_label)
-
-        self.hotfiretime_str = "Request timer didn't load"
-        self.hotfiretime_label = QLabel(self.hotfiretime_str)
-        self.hotfiretime_label.setStyleSheet("font-size: 60px;")
-        self.preset_commands_layout.addWidget(self.hotfiretime_label)
 
         self.statemachine_str = "Request timer didn't load"
         self.statemachine_label = QLabel("Machine state: {self.statemachine_str}")
@@ -482,23 +498,39 @@ class PropertyTestApp(QMainWindow):
         self.get_new_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"get hardware json", "data":{}})))
         self.preset_commands_layout.addWidget(self.get_new_hardware_json)
 
+
+
+        self.hotfiretime_str = "Request timer didn't load"
+        self.hotfiretime_label = QLabel(self.hotfiretime_str)
+        self.hotfiretime_label.setStyleSheet("font-size: 60px;")
+        self.preset_commands_layout.addWidget(self.hotfiretime_label)
+
+        self.datetime_str = "Request timer didn't load"
+        self.datetime_label = QLabel(f"Backend Time: {self.datetime_str}")
+        self.preset_commands_layout.addWidget(self.datetime_label)
+
         self.preset_commands_layout.addStretch()
 
         self.commands_layout = QHBoxLayout()
-        self.commands_layout.addLayout(self.manual_command_layout)
         self.commands_layout.addLayout(self.preset_commands_layout)
 
         self.control_area = QVBoxLayout()
         self.sensor_area = QVBoxLayout()
 
+        self.temp_layout = QHBoxLayout()
+
         self.actuators_sensors_area = QVBoxLayout()
         self.actuators_sensors_area.addLayout(self.control_area)
         self.actuators_sensors_area.addLayout(self.sensor_area)
 
+        self.temp_layout.addLayout(self.actuators_sensors_area)
+        self.temp_layout.addLayout(self.manual_command_layout)
 
-        self.main_layout.addWidget(self.data_waiting_label)
-        self.main_layout.addLayout(self.actuators_sensors_area)
         self.main_layout.addLayout(self.commands_layout)
+        self.main_layout.addWidget(self.data_waiting_label)
+        self.main_layout.addLayout(self.temp_layout)
+        # self.main_layout.addLayout(self.actuators_sensors_area)
+        
 
         
 
@@ -514,6 +546,7 @@ class PropertyTestApp(QMainWindow):
         self.commands_responses = {
             "get hardware json": self.hardware_json_received,
             "get boards states": self.boards_states_received,
+            "get boards desired states": self.boards_desired_states_received,
             "get state": self.machinestate_received,
             "get time": self.time_received
         }
@@ -624,6 +657,21 @@ class PropertyTestApp(QMainWindow):
         sensor_mainlayout.addStretch()
         sensor_group.setLayout(sensor_mainlayout)
         self.sensor_area.addWidget(sensor_group)
+
+    def boards_desired_states_received(self, response):
+        try:
+            response = json.loads(response)
+        except json.JSONDecodeError:
+            print("Boards desired states is not valid JSON")
+            return
+        
+        for board_name, states in response.items():
+            if board_name in self.hardware_json["boards"]:
+                for actuator in self.actuator_list:
+                    if actuator.board_name == board_name:
+                        actuator.update_desired_states(states)
+            else:
+                print(f"Board {board_name} not found in hardware json")
 
     def boards_states_received(self, response):
         try:
