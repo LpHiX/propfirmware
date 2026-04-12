@@ -15,7 +15,7 @@ import pyqtgraph as pg
 import numpy as np
 from collections import deque
 
-PLOT_SECONDS = 2
+PLOT_SECONDS = 30
 
 class UDPManager(QObject):
     dataReceived = Signal(str)
@@ -206,9 +206,14 @@ class ServoControllerWidget(ActuatorControllerWidget):
         self.manual_angle_button = QPushButton("Set Angle")
         self.manual_angle_button.setFixedWidth(self.BUTTON_WIDTH)
         self.manual_angle_button.clicked.connect(self.set_manual_angle)
+
+        self.zero_angle_button = QPushButton("Set 0")
+        self.zero_angle_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.zero_angle_button.clicked.connect(self.set_zero_angle)
         
         self.layout.addWidget(self.manual_angle)
         self.layout.addWidget(self.manual_angle_button)
+        self.layout.addWidget(self.zero_angle_button)
     
     def update_specific_states(self, states):
         try:
@@ -232,6 +237,10 @@ class ServoControllerWidget(ActuatorControllerWidget):
             self.send_command("angle", angle)
         except ValueError as e:
             print(f"Invalid angle: {e}")
+
+    def set_zero_angle(self):
+        self.send_command("angle", 0)
+        self.manual_angle.setText("0")
 
 class SolenoidControllerWidget(ActuatorControllerWidget):
     def __init__(self, config, board_name, actuator_name, udpmanager):
@@ -301,7 +310,7 @@ pt_number = 0
 class SensorControllerWidget(QWidget):
     """"Base class for all sensor controller widgets"""
     def __init__(self, config, sensor_default_data, board_name, sensor_name, sensor_type, udpmanager, testapp):
-        global pt_number  # Add this line to access the global pt_number variable
+        global pt_number
         super().__init__()
         self.config = config
         self.sensor_default_data = sensor_default_data
@@ -324,6 +333,7 @@ class SensorControllerWidget(QWidget):
         self.layout.addWidget(self.name_label)
 
         self.values = {}
+        self.pressure_curves = []
         self.MAX_HISTORY_SIZE = 10000
         
         for value_name, _ in self.sensor_default_data.items():
@@ -339,9 +349,10 @@ class SensorControllerWidget(QWidget):
             self.values[value_name]["array_size"] = 0
 
             self.values[value_name]["plot"] = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
-            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(colors[pt_number], width=2))
+            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(colors[pt_number % len(colors)], width=2))
             if sensor_type == "pts":
-                self.values[value_name]["pressurecurve"] = self.testapp.pressureplot.plot(pen=pg.mkPen(colors[pt_number], width=2), name=sensor_name)
+                self.values[value_name]["pressurecurve"] = self.testapp.pressureplot.plot(pen=pg.mkPen(colors[pt_number % len(colors)], width=2), name=sensor_name)
+                self.pressure_curves.append(self.values[value_name]["pressurecurve"])
             pt_number += 1
 
             self.vertical_layout = QVBoxLayout()
@@ -356,6 +367,16 @@ class SensorControllerWidget(QWidget):
             self.value_timer.start(50)
         self.layout.addStretch()
 
+    def cleanup(self):
+        if hasattr(self, "value_timer") and self.value_timer is not None:
+            self.value_timer.stop()
+        for curve in self.pressure_curves:
+            try:
+                self.testapp.pressureplot.removeItem(curve)
+            except Exception:
+                pass
+        self.pressure_curves.clear()
+
     def update_history(self, value_name):
         value_history = self.values[value_name]["history"]
         time_array = self.values[value_name]["time_array"]
@@ -364,7 +385,7 @@ class SensorControllerWidget(QWidget):
         if not value_history:
             return
         
-        # Clean up old data points (older than 10 seconds)
+        # Clean up old data points (older than 120 seconds)
         current_time = QDateTime.currentDateTime()
         cutoff_time = current_time.addSecs(-120)
         while value_history and value_history[0][0] < cutoff_time:
@@ -383,10 +404,14 @@ class SensorControllerWidget(QWidget):
             time_array[i] = t.toMSecsSinceEpoch()
             value_array[i] = v
         
-        # Use preallocated arrays for plotting
+        # Find index for the start of the window based on time
+        start_time = time_array[size-1] - PLOT_SECONDS * 1000
+        start_idx = np.searchsorted(time_array[:size], start_time)
+        
+        # Use accurate slice for plotting
         self.values[value_name]["curve"].setData(
-            (time_array[max(0, size-PLOT_SECONDS*100):size] - time_array[size-1]) / 1000, 
-            value_array[max(0, size-PLOT_SECONDS*100):size]
+            (time_array[start_idx:size] - time_array[size-1]) / 1000, 
+            value_array[start_idx:size]
         )
         if self.sensor_type == "pts":
             self.values[value_name]["pressurecurve"].setData(
@@ -398,7 +423,8 @@ class SensorControllerWidget(QWidget):
         for value_name, value_dict in self.values.items():
             value_label = value_dict["label"]
             try:
-                value = states[self.sensor_type][self.sensor_name][value_name]
+                raw_value = states[self.sensor_type][self.sensor_name][value_name]
+                value = raw_value
                 
                 
                 # Apply calibration if available
@@ -412,7 +438,16 @@ class SensorControllerWidget(QWidget):
                         gain = self.config[self.sensor_type][self.sensor_name]["gain"]
                         offset = self.config[self.sensor_type][self.sensor_name]["offset"]
                         value = (value - offset) * gain
-                    value_label.setText(f"{value:.2f}")
+                        if isinstance(raw_value, (int, float)) and float(raw_value).is_integer():
+                            raw_display = f"{int(raw_value)}"
+                        else:
+                            raw_display = f"{raw_value:.0f}"
+                        value_label.setText(
+                            f"<span>{value:.1f}</span> "
+                            f"<span style='font-size: 24px;'> {raw_display}mV</span>"
+                        )
+                    else:
+                        value_label.setText(f"{value:.2f}")
                 
                 # Add to the history deque
                 if value is None:
@@ -432,6 +467,8 @@ class PropertyTestApp(QMainWindow):
         self.hardware_types: list[str] = []
         self.actuator_list = []
         self.sensor_list = []
+        self.actuator_group_widget = None
+        self.sensor_group_widget = None
 
 
         self.setWindowTitle("Property Test App")
@@ -545,11 +582,96 @@ class PropertyTestApp(QMainWindow):
 
         self.commands_responses = {
             "get hardware json": self.hardware_json_received,
+            "reload hardware json": self.reload_hardware_json_received,
             "get boards states": self.boards_states_received,
             "get boards desired states": self.boards_desired_states_received,
             "get state": self.machinestate_received,
             "get time": self.time_received
         }
+
+    def _clear_dynamic_ui(self):
+        for actuator in self.actuator_list:
+            actuator.setParent(None)
+            actuator.deleteLater()
+        self.actuator_list.clear()
+
+        for sensor in self.sensor_list:
+            try:
+                sensor.cleanup()
+            except Exception:
+                pass
+            sensor.setParent(None)
+            sensor.deleteLater()
+        self.sensor_list.clear()
+
+        if self.actuator_group_widget is not None:
+            self.control_area.removeWidget(self.actuator_group_widget)
+            self.actuator_group_widget.setParent(None)
+            self.actuator_group_widget.deleteLater()
+            self.actuator_group_widget = None
+
+        if self.sensor_group_widget is not None:
+            self.sensor_area.removeWidget(self.sensor_group_widget)
+            self.sensor_group_widget.setParent(None)
+            self.sensor_group_widget.deleteLater()
+            self.sensor_group_widget = None
+
+        self.pressureplot.clear()
+        if self.pressureplot.plotItem.legend is None:
+            self.pressureplot.addLegend()
+
+    def _build_dynamic_ui_from_hardware(self):
+        if self.hardware_json is None:
+            return
+        hardware_json = self.hardware_json
+
+        actuator_group = QGroupBox("Actuators")
+        actuator_layout = QVBoxLayout()
+
+        default_actuator_types = {
+            "servos": ServoControllerWidget,
+            "solenoids": SolenoidControllerWidget,
+            "pyros": PyroControllerWidget
+        }
+
+        for board_name, board_config in hardware_json["boards"].items():
+            if board_config.get("is_actuator", False):
+                for actuator_type, actuator_widget_class in default_actuator_types.items():
+                    if actuator_type in board_config:
+                        for actuator_name, _ in board_config[actuator_type].items():
+                            actuator_controller_widget = actuator_widget_class(board_config, board_name, actuator_name, self.udp_manager)
+                            actuator_layout.addWidget(actuator_controller_widget)
+                            self.actuator_list.append(actuator_controller_widget)
+        actuator_layout.addStretch()
+        actuator_group.setLayout(actuator_layout)
+        self.control_area.addWidget(actuator_group)
+        self.actuator_group_widget = actuator_group
+
+        sensor_group = QGroupBox("Sensors")
+        sensor_mainlayout = QVBoxLayout()
+        for board_name, board_config in hardware_json["boards"].items():
+            if not board_config.get("is_actuator", False):
+                for sensor_type, sensor_default_data in self.state_defaults.items():
+                    if sensor_type in board_config and isinstance(board_config[sensor_type], dict):
+                        sensor_layout = QHBoxLayout()
+                        sensor_mainlayout.addLayout(sensor_layout)
+                        for sensor_name, _ in board_config[sensor_type].items():
+                            sensor_controller_widget = SensorControllerWidget(board_config, sensor_default_data, board_name, sensor_name, sensor_type, self.udp_manager, self)
+                            sensor_layout.addWidget(sensor_controller_widget)
+                            self.sensor_list.append(sensor_controller_widget)
+        sensor_mainlayout.addStretch()
+        sensor_group.setLayout(sensor_mainlayout)
+        self.sensor_area.addWidget(sensor_group)
+        self.sensor_group_widget = sensor_group
+
+    def reload_hardware_json_received(self, response):
+        try:
+            response_json = json.loads(response)
+            if "response" not in response_json:
+                return
+        except json.JSONDecodeError:
+            return
+        self.udp_manager.request_hardware_json()
     def time_received(self, responsestr):
         try:
             response = json.loads(responsestr)["response"]
@@ -595,10 +717,14 @@ class PropertyTestApp(QMainWindow):
         except json.JSONDecodeError:
             print("Failed to decode JSON data")
     def hardware_json_received(self, response):
+        global pt_number
+        pt_number = 0
         self.udp_manager.set_hardware_json_received(True)
-        self.main_layout.removeWidget(self.data_waiting_label)
-        self.data_waiting_label.setParent(None)
-        self.data_waiting_label.deleteLater()
+        if self.data_waiting_label is not None:
+            self.main_layout.removeWidget(self.data_waiting_label)
+            self.data_waiting_label.setParent(None)
+            self.data_waiting_label.deleteLater()
+            self.data_waiting_label = None
         try :
             response = json.loads(response)
         except json.JSONDecodeError:
@@ -616,49 +742,13 @@ class PropertyTestApp(QMainWindow):
         
         self.state_defaults: dict = self.hardware_json['state_defaults']
         self.hardware_types = list(self.state_defaults.keys())
-        
-        actuator_group = QGroupBox("Actuators")
-        actuator_layout = QVBoxLayout()
-        self.actuator_list.clear()
 
-        default_actuator_types = {
-            "servos": ServoControllerWidget,
-            "solenoids": SolenoidControllerWidget,
-            "pyros": PyroControllerWidget
-        }
-
-        for board_name, board_config in self.hardware_json["boards"].items():
-            if board_config.get("is_actuator", False):
-                for actuator_type, actuator_widget_class in default_actuator_types.items():
-                    if actuator_type in board_config:
-                        for actuator_name, _ in board_config[actuator_type].items():
-                            actuator_controller_widget = actuator_widget_class(board_config, board_name, actuator_name, self.udp_manager)
-                            actuator_layout.addWidget(actuator_controller_widget)
-                            self.actuator_list.append(actuator_controller_widget)
-        actuator_layout.addStretch()
-        actuator_group.setLayout(actuator_layout)
-        self.control_area.addWidget(actuator_group)
-        
-        sensor_group = QGroupBox("Sensors")
-        sensor_mainlayout = QVBoxLayout()
-        sensors_layout = []
-        self.sensor_list.clear()
-        for board_name, board_config in self.hardware_json["boards"].items():
-            if not board_config.get("is_actuator", False):
-                for sensor_type, sensor_default_data in self.state_defaults.items():
-                    if sensor_type in board_config and isinstance(board_config[sensor_type], dict):
-                        sensor_layout = QHBoxLayout()
-                        sensor_mainlayout.addLayout(sensor_layout)
-                        sensors_layout.append(sensor_layout)
-                        for sensor_name, _ in board_config[sensor_type].items():
-                            sensor_controller_widget = SensorControllerWidget(board_config, sensor_default_data, board_name, sensor_name, sensor_type, self.udp_manager, self)
-                            sensor_layout.addWidget(sensor_controller_widget)
-                            self.sensor_list.append(sensor_controller_widget)
-        sensor_mainlayout.addStretch()
-        sensor_group.setLayout(sensor_mainlayout)
-        self.sensor_area.addWidget(sensor_group)
+        self._clear_dynamic_ui()
+        self._build_dynamic_ui_from_hardware()
 
     def boards_desired_states_received(self, response):
+        if self.hardware_json is None:
+            return
         try:
             response = json.loads(response)
         except json.JSONDecodeError:
@@ -674,6 +764,8 @@ class PropertyTestApp(QMainWindow):
                 print(f"Board {board_name} not found in hardware json")
 
     def boards_states_received(self, response):
+        if self.hardware_json is None:
+            return
         try:
             response = json.loads(response)
         except json.JSONDecodeError:
@@ -722,7 +814,15 @@ class PropertyTestApp(QMainWindow):
             self.last_state_update_label.setStyleSheet("color: red")
 
 if __name__ == "__main__":
-    host = "192.168.137.2"
+    host = "192.168.137.179"
+
+    # find with:
+    # hostname -I
+    #
+    # output:
+    # martin@raspberrypi:~/propbackend $ hostname -I
+    # 192.168.137.179 172.26.163.215 2a0c:5bc0:40:2e26:deda:e82b:ed5e:b0b2 
+
     # host = "127.0.0.1"
     port = 8888
 
