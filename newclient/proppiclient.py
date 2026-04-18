@@ -13,9 +13,11 @@ from PySide6.QtCore import Slot, QObject, Signal
 from PySide6.QtCore import QDateTime
 import pyqtgraph as pg
 import numpy as np
-from collections import deque
 
 PLOT_SECONDS = 30
+PLOT_UPDATE_INTERVAL_MS = 20
+REQUEST_STATES_INTERVAL_MS = 20
+BACKEND_META_INTERVAL_MS = 100
 
 class UDPManager(QObject):
     dataReceived = Signal(str)
@@ -50,7 +52,7 @@ class UDPManager(QObject):
                 self.hardware_json_timer.stop()
                 self.transmit_timer = QTimer(self)
                 self.transmit_timer.timeout.connect(self.request_states)
-                self.transmit_timer.start(10) #10ms = 100Hz
+                self.transmit_timer.start(REQUEST_STATES_INTERVAL_MS)
     
     @Slot()
     def request_states(self):
@@ -334,24 +336,29 @@ class SensorControllerWidget(QWidget):
 
         self.values = {}
         self.pressure_curves = []
-        self.MAX_HISTORY_SIZE = 10000
+        # Keep enough points for plotting while limiting memory and copy cost.
+        self.MAX_HISTORY_SIZE = max(1000, int(PLOT_SECONDS * 120))
         
         for value_name, _ in self.sensor_default_data.items():
             self.values[value_name] = {"value": "No data"}
             self.values[value_name]["label"] = QLabel(f"{value_name}: No data")
             self.values[value_name]["label"].setStyleSheet("font-size: 40px;")
             self.values[value_name]["label"].setFixedWidth(self.LABEL_WIDTH + 100)
-            self.values[value_name]["history"] = deque(maxlen=self.MAX_HISTORY_SIZE)
-            
-            # Preallocate arrays for improved performance
+
+            # Fixed-size ring buffer for plotting history
             self.values[value_name]["time_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
             self.values[value_name]["value_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
-            self.values[value_name]["array_size"] = 0
+            self.values[value_name]["head"] = 0
+            self.values[value_name]["count"] = 0
 
             self.values[value_name]["plot"] = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
             self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(colors[pt_number % len(colors)], width=2))
+            self.values[value_name]["curve"].setClipToView(True)
+            self.values[value_name]["curve"].setDownsampling(auto=True, method="peak")
             if sensor_type == "pts":
                 self.values[value_name]["pressurecurve"] = self.testapp.pressureplot.plot(pen=pg.mkPen(colors[pt_number % len(colors)], width=2), name=sensor_name)
+                self.values[value_name]["pressurecurve"].setClipToView(True)
+                self.values[value_name]["pressurecurve"].setDownsampling(auto=True, method="peak")
                 self.pressure_curves.append(self.values[value_name]["pressurecurve"])
             pt_number += 1
 
@@ -361,15 +368,15 @@ class SensorControllerWidget(QWidget):
 
 
             self.layout.addLayout(self.vertical_layout)
-            
-            self.value_timer = QTimer(self)
-            self.value_timer.timeout.connect(lambda vn=value_name: self.update_history(vn))
-            self.value_timer.start(50)
+
+        self.plot_timer = QTimer(self)
+        self.plot_timer.timeout.connect(self.update_all_histories)
+        self.plot_timer.start(PLOT_UPDATE_INTERVAL_MS)
         self.layout.addStretch()
 
     def cleanup(self):
-        if hasattr(self, "value_timer") and self.value_timer is not None:
-            self.value_timer.stop()
+        if hasattr(self, "plot_timer") and self.plot_timer is not None:
+            self.plot_timer.stop()
         for curve in self.pressure_curves:
             try:
                 self.testapp.pressureplot.removeItem(curve)
@@ -377,49 +384,42 @@ class SensorControllerWidget(QWidget):
                 pass
         self.pressure_curves.clear()
 
-    def update_history(self, value_name):
-        value_history = self.values[value_name]["history"]
-        time_array = self.values[value_name]["time_array"]
-        value_array = self.values[value_name]["value_array"]
+    def update_all_histories(self):
+        for value_name in self.values:
+            self.update_history(value_name)
 
-        if not value_history:
+    def update_history(self, value_name):
+        value_dict = self.values[value_name]
+        count = value_dict["count"]
+        if count == 0:
             return
-        
-        # Clean up old data points (older than 120 seconds)
-        current_time = QDateTime.currentDateTime()
-        cutoff_time = current_time.addSecs(-120)
-        while value_history and value_history[0][0] < cutoff_time:
-            value_history.popleft()
-        
-        if not value_history:   
-            # Reset array size if history is empty
-            self.values[value_name]["array_size"] = 0
-            return
-        
-        # Copy data to preallocated arrays
-        size = len(value_history)
-        self.values[value_name]["array_size"] = size
-        
-        for i, (t, v) in enumerate(value_history):
-            time_array[i] = t.toMSecsSinceEpoch()
-            value_array[i] = v
-        
-        # Find index for the start of the window based on time
-        start_time = time_array[size-1] - PLOT_SECONDS * 1000
-        start_idx = np.searchsorted(time_array[:size], start_time)
-        
-        # Use accurate slice for plotting
-        self.values[value_name]["curve"].setData(
-            (time_array[start_idx:size] - time_array[size-1]) / 1000, 
-            value_array[start_idx:size]
+
+        time_array = value_dict["time_array"]
+        value_array = value_dict["value_array"]
+        head = value_dict["head"]
+
+        if count < self.MAX_HISTORY_SIZE:
+            times = time_array[:count]
+            values = value_array[:count]
+        else:
+            times = np.concatenate((time_array[head:], time_array[:head]))
+            values = np.concatenate((value_array[head:], value_array[:head]))
+
+        start_time = times[-1] - (PLOT_SECONDS * 1000)
+        start_idx = np.searchsorted(times, start_time, side="left")
+
+        value_dict["curve"].setData(
+            (times[start_idx:] - times[-1]) / 1000.0,
+            values[start_idx:]
         )
         if self.sensor_type == "pts":
-            self.values[value_name]["pressurecurve"].setData(
-                (time_array[:size] - time_array[0]) / 1000, 
-                value_array[:size]
+            value_dict["pressurecurve"].setData(
+                (times - times[0]) / 1000.0,
+                values
             )
 
     def update_states(self, states):
+        timestamp_ms = float(QDateTime.currentMSecsSinceEpoch())
         for value_name, value_dict in self.values.items():
             value_label = value_dict["label"]
             try:
@@ -452,7 +452,13 @@ class SensorControllerWidget(QWidget):
                 # Add to the history deque
                 if value is None:
                     continue
-                value_dict["history"].append((QDateTime.currentDateTime(), float(value)))
+
+                idx = value_dict["head"]
+                value_dict["time_array"][idx] = timestamp_ms
+                value_dict["value_array"][idx] = float(value)
+                value_dict["head"] = (idx + 1) % self.MAX_HISTORY_SIZE
+                if value_dict["count"] < self.MAX_HISTORY_SIZE:
+                    value_dict["count"] += 1
                 
             except KeyError:
                 value_label.setText("Value: No data")
@@ -495,7 +501,7 @@ class PropertyTestApp(QMainWindow):
         self.last_state_update_label.setFixedWidth(200)
         self.backend_state_timer = QTimer(self)
         self.backend_state_timer.timeout.connect(self.backend_state_coroutine)
-        self.backend_state_timer.start(10)
+        self.backend_state_timer.start(BACKEND_META_INTERVAL_MS)
         self.manual_command = QTextEdit(self)
         self.manual_response = QTextEdit(self)
         self.manual_response.setReadOnly(True)
