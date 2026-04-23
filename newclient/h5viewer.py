@@ -1,5 +1,7 @@
 import argparse
 import itertools
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, cast
@@ -11,6 +13,7 @@ QtCore: Any
 QtGui: Any
 QtWidgets: Any
 pg: Any
+ne: Any
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -20,6 +23,11 @@ except ImportError:
     QtGui = None
     QtWidgets = None
     pg = None
+
+try:
+    import numexpr as ne  # pyright: ignore[reportMissingImports]
+except ImportError:
+    ne = None
 
 BaseWindow: type = cast(type, QtWidgets.QMainWindow) if QtWidgets is not None else object
 BaseWidget: type = cast(type, QtWidgets.QWidget) if QtWidgets is not None else object
@@ -38,15 +46,28 @@ class ChannelRecord:
     values: np.ndarray
 
 
+@dataclass(frozen=True)
+class DerivedChannelDefinition:
+    name: str
+    expression: str
+    unit: str
+
+
 class H5FileTab(BaseWidget):
     def __init__(self) -> None:
         super().__init__()
 
         self.current_file: Path | None = None
+        self.base_channels: Dict[str, ChannelRecord] = {}
         self.channels: Dict[str, ChannelRecord] = {}
+        self.derived_channels: Dict[str, DerivedChannelDefinition] = {}
         self.selected_channels: set[str] = set()
         self.unit_plots: Dict[str, Any] = {}
         self.unit_curves: Dict[str, Dict[str, Any]] = {}
+        self.unit_regions: Dict[str, Any] = {}
+        self.unit_region_actions: Dict[str, Any] = {}
+        self.unit_metric_actions: Dict[str, Dict[str, Any]] = {}
+        self.active_region_unit: str | None = None
         self.color_cycle = itertools.cycle(
             [
                 "#1f77b4",
@@ -62,18 +83,35 @@ class H5FileTab(BaseWidget):
         self.channel_color: Dict[str, str] = {}
         self.max_points_per_curve = 6000
         self._table_mutation = False
+        self._derived_config_dir = Path(__file__).resolve().parent / "h5viewer_config"
+        self._derived_config_file = self._derived_config_dir / "derived_channels.json"
+        self.metric_labels: Dict[str, str] = {
+            "integral": "Integral",
+            "min": "Min",
+            "max": "Max",
+            "mean": "Mean",
+            "rms": "RMS",
+            "std": "Std Dev",
+        }
+        self.metric_order = ["integral", "min", "max", "mean", "rms", "std"]
+        self.enabled_metrics: set[str] = {"integral"}
 
+        self._load_derived_config()
         self._build_ui()
         self._connect_signals()
 
     def _build_ui(self) -> None:
-        root = QtWidgets.QHBoxLayout(self)
+        root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setSpacing(0)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        root.addWidget(splitter, 1)
 
         left_panel = QtWidgets.QFrame()
-        left_panel.setMinimumWidth(430)
-        left_panel.setMaximumWidth(520)
+        left_panel.setMinimumWidth(320)
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(6)
@@ -93,6 +131,41 @@ class H5FileTab(BaseWidget):
         self.link_x_checkbox = QtWidgets.QCheckBox("Link X pan/zoom across unit plots")
         self.link_x_checkbox.setChecked(True)
         left_layout.addWidget(self.link_x_checkbox)
+
+        derived_box = QtWidgets.QGroupBox("Derived channels")
+        derived_layout = QtWidgets.QVBoxLayout(derived_box)
+        derived_layout.setContentsMargins(8, 8, 8, 8)
+        derived_layout.setSpacing(6)
+
+        self.derived_name_edit = QtWidgets.QLineEdit()
+        self.derived_name_edit.setPlaceholderText("Name (e.g. flow_lps)")
+        derived_layout.addWidget(self.derived_name_edit)
+
+        self.derived_expr_edit = QtWidgets.QLineEdit()
+        self.derived_expr_edit.setPlaceholderText("Expression with channel names (e.g. flow_main / 60)")
+        derived_layout.addWidget(self.derived_expr_edit)
+
+        self.derived_unit_edit = QtWidgets.QLineEdit()
+        self.derived_unit_edit.setPlaceholderText("Output unit (e.g. L/s)")
+        derived_layout.addWidget(self.derived_unit_edit)
+
+        derived_button_row = QtWidgets.QHBoxLayout()
+        self.add_derived_button = QtWidgets.QPushButton("Add / Update")
+        self.remove_derived_button = QtWidgets.QPushButton("Remove Selected")
+        derived_button_row.addWidget(self.add_derived_button)
+        derived_button_row.addWidget(self.remove_derived_button)
+        derived_layout.addLayout(derived_button_row)
+
+        self.derived_list = QtWidgets.QListWidget()
+        self.derived_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.derived_list.setMaximumHeight(115)
+        derived_layout.addWidget(self.derived_list)
+
+        self.derived_help_label = QtWidgets.QLabel("Use exact channel names in expressions. Operators: + - * / **")
+        self.derived_help_label.setWordWrap(True)
+        derived_layout.addWidget(self.derived_help_label)
+
+        left_layout.addWidget(derived_box)
 
         self.channel_table = QtWidgets.QTableWidget(0, 5)
         self.channel_table.setHorizontalHeaderLabels(["Plot", "Channel", "Unit", "Signal", "Samples"])
@@ -114,7 +187,20 @@ class H5FileTab(BaseWidget):
         self.clear_button = QtWidgets.QPushButton("Clear all plotted channels")
         left_layout.addWidget(self.clear_button)
 
-        root.addWidget(left_panel)
+        self.region_info_label = QtWidgets.QLabel("Region: none")
+        left_layout.addWidget(self.region_info_label)
+
+        self.analysis_table = QtWidgets.QTableWidget(0, 0)
+        self.analysis_table.verticalHeader().setVisible(False)
+        self.analysis_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.analysis_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.analysis_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.analysis_table.setAlternatingRowColors(True)
+        self.analysis_table.setMaximumHeight(185)
+        self._rebuild_analysis_table_columns()
+        left_layout.addWidget(self.analysis_table)
+
+        splitter.addWidget(left_panel)
 
         self.plot_scroll = QtWidgets.QScrollArea()
         self.plot_scroll.setWidgetResizable(True)
@@ -127,7 +213,10 @@ class H5FileTab(BaseWidget):
         self.plot_layout.addStretch(1)
 
         self.plot_scroll.setWidget(self.plot_container)
-        root.addWidget(self.plot_scroll, 1)
+        splitter.addWidget(self.plot_scroll)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([450, 1100])
 
     def _connect_signals(self) -> None:
         self.search_edit.textChanged.connect(self._apply_table_filter)
@@ -136,10 +225,15 @@ class H5FileTab(BaseWidget):
         self.use_raw_checkbox.stateChanged.connect(self._reload_current_file_data)
         self.link_x_checkbox.stateChanged.connect(self._relink_unit_plots)
         self.clear_button.clicked.connect(self._clear_all_channels)
+        self.add_derived_button.clicked.connect(self._add_or_update_derived_channel)
+        self.remove_derived_button.clicked.connect(self._remove_selected_derived_channel)
+        self.derived_list.itemSelectionChanged.connect(self._on_derived_selected)
 
     def load_file(self, path: Path) -> None:
         try:
-            self.channels = self._read_channels(path, use_raw=self.use_raw_checkbox.isChecked())
+            self.base_channels = self._read_channels(path, use_raw=self.use_raw_checkbox.isChecked())
+            self.channels = dict(self.base_channels)
+            self._apply_derived_channels_to_loaded_data()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Open failed", f"Failed to open file:\n{exc}")
             return
@@ -148,10 +242,16 @@ class H5FileTab(BaseWidget):
         self.selected_channels.clear()
         self.unit_plots.clear()
         self.unit_curves.clear()
+        self.unit_regions.clear()
+        self.unit_region_actions.clear()
+        self.unit_metric_actions.clear()
         self.channel_color.clear()
+        self.active_region_unit = None
         self._clear_plot_widgets()
+        self._clear_analysis_table()
 
         self.file_label.setText(f"Loaded: {path}")
+        self._refresh_derived_list()
         self._populate_channel_table()
 
     def _reload_current_file_data(self) -> None:
@@ -298,6 +398,9 @@ class H5FileTab(BaseWidget):
             self._remove_curve(channel)
             self._prune_empty_unit_plots()
 
+        if self.unit_regions:
+            self._refresh_analysis_table_from_active_regions()
+
     def _ensure_unit_plot(self, unit: str) -> None:
         if unit in self.unit_plots:
             return
@@ -306,10 +409,33 @@ class H5FileTab(BaseWidget):
         plot.showGrid(x=True, y=True, alpha=0.25)
         plot.setLabel("left", f"Value ({unit})")
         plot.setLabel("bottom", "Time (s)")
+        plot.addLegend(offset=(8, 8))
+
+        view_box = plot.getViewBox()
+        toggle_action = QtGui.QAction("Select Region", plot)
+        toggle_action.triggered.connect(lambda _checked=False, unit_name=unit: self._toggle_region_for_unit(unit_name))
+        metrics_menu = QtWidgets.QMenu("Region Metrics", plot)
+        metric_actions: Dict[str, Any] = {}
+        for metric_key in self.metric_order:
+            metric_action = QtGui.QAction(self.metric_labels[metric_key], plot)
+            metric_action.setCheckable(True)
+            metric_action.setChecked(metric_key in self.enabled_metrics)
+            metric_action.triggered.connect(
+                lambda checked, key=metric_key: self._set_metric_enabled(key, bool(checked))
+            )
+            metrics_menu.addAction(metric_action)
+            metric_actions[metric_key] = metric_action
+
+        if hasattr(view_box, "menu") and view_box.menu is not None:
+            view_box.menu.addSeparator()
+            view_box.menu.addAction(toggle_action)
+            view_box.menu.addMenu(metrics_menu)
 
         self.plot_layout.insertWidget(max(0, self.plot_layout.count() - 1), plot, 1)
         self.unit_plots[unit] = plot
         self.unit_curves[unit] = {}
+        self.unit_region_actions[unit] = toggle_action
+        self.unit_metric_actions[unit] = metric_actions
         self._relink_unit_plots()
 
     def _add_curve(self, channel: ChannelRecord) -> None:
@@ -338,14 +464,26 @@ class H5FileTab(BaseWidget):
             self.unit_plots[channel.unit].removeItem(curve)
 
     def _prune_empty_unit_plots(self) -> None:
+        removed_any_plot = False
         for unit in list(self.unit_plots.keys()):
             if self.unit_curves.get(unit):
                 continue
             plot = self.unit_plots.pop(unit)
             self.unit_curves.pop(unit, None)
+            self.unit_regions.pop(unit, None)
+            self.unit_region_actions.pop(unit, None)
+            self.unit_metric_actions.pop(unit, None)
             self.plot_layout.removeWidget(plot)
             plot.deleteLater()
+            removed_any_plot = True
         self._relink_unit_plots()
+        if self.active_region_unit not in self.unit_plots:
+            self.active_region_unit = None
+        if removed_any_plot:
+            if self.unit_regions:
+                self._refresh_analysis_table_from_active_regions()
+            else:
+                self._clear_analysis_table()
 
     def _relink_unit_plots(self) -> None:
         plots = list(self.unit_plots.values())
@@ -371,9 +509,14 @@ class H5FileTab(BaseWidget):
         self.selected_channels.clear()
         self.unit_curves.clear()
         self.unit_plots.clear()
+        self.unit_regions.clear()
+        self.unit_region_actions.clear()
+        self.unit_metric_actions.clear()
         self.channel_color.clear()
+        self.active_region_unit = None
 
         self._clear_plot_widgets()
+        self._clear_analysis_table()
 
         for row in range(self.channel_table.rowCount()):
             self._table_mutation = True
@@ -388,6 +531,363 @@ class H5FileTab(BaseWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _toggle_region_for_unit(self, unit: str) -> None:
+        if unit in self.unit_regions:
+            self._remove_region_for_unit(unit)
+            return
+        self._create_region_for_unit(unit)
+
+    def _create_region_for_unit(self, unit: str) -> None:
+        plot = self.unit_plots.get(unit)
+        if plot is None:
+            return
+
+        x_start, x_end = self._region_default_bounds_for_unit(unit)
+        region = pg.LinearRegionItem(values=[x_start, x_end], movable=True)
+        region.setZValue(100)
+        plot.addItem(region)
+        region.sigRegionChanged.connect(lambda _=None, unit_name=unit: self._on_region_changed(unit_name))
+        self.unit_regions[unit] = region
+
+        action = self.unit_region_actions.get(unit)
+        if action is not None:
+            action.setText("Deselect Region")
+
+        self._on_region_changed(unit)
+
+    def _remove_region_for_unit(self, unit: str) -> None:
+        plot = self.unit_plots.get(unit)
+        region = self.unit_regions.pop(unit, None)
+        if plot is not None and region is not None:
+            plot.removeItem(region)
+
+        action = self.unit_region_actions.get(unit)
+        if action is not None:
+            action.setText("Select Region")
+
+        if self.active_region_unit == unit:
+            self.active_region_unit = None
+
+        if self.unit_regions:
+            self._refresh_analysis_table_from_active_regions()
+        else:
+            self._clear_analysis_table()
+
+    def _region_default_bounds_for_unit(self, unit: str) -> tuple[float, float]:
+        plot = self.unit_plots.get(unit)
+        if plot is not None:
+            x_range = plot.getViewBox().viewRange()[0]
+            x_min = float(x_range[0])
+            x_max = float(x_range[1])
+            if np.isfinite(x_min) and np.isfinite(x_max) and x_max > x_min:
+                span = x_max - x_min
+                return x_min + 0.25 * span, x_min + 0.75 * span
+
+        curves = self.unit_curves.get(unit, {})
+        for channel_name in curves.keys():
+            record = self.channels.get(channel_name)
+            if record is None or len(record.time) < 2:
+                continue
+            t0 = float(record.time[0])
+            t1 = float(record.time[-1])
+            if np.isfinite(t0) and np.isfinite(t1) and t1 > t0:
+                span = t1 - t0
+                return t0 + 0.25 * span, t0 + 0.75 * span
+
+        return 0.0, 1.0
+
+    def _on_region_changed(self, unit: str) -> None:
+        region = self.unit_regions.get(unit)
+        if region is None:
+            return
+
+        start, end = region.getRegion()
+        if end < start:
+            start, end = end, start
+
+        self.active_region_unit = unit
+        self._refresh_analysis_table_from_active_regions()
+
+    def _refresh_analysis_table_from_active_regions(self) -> None:
+        self.analysis_table.setRowCount(0)
+        region_summaries: list[str] = []
+
+        for unit in sorted(self.unit_regions.keys()):
+            region = self.unit_regions.get(unit)
+            if region is None:
+                continue
+
+            start, end = region.getRegion()
+            if end < start:
+                start, end = end, start
+
+            region_summaries.append(f"{unit}: {start:.3f} to {end:.3f} s")
+            self._append_analysis_rows_for_unit(unit, start, end)
+
+        if region_summaries:
+            self.region_info_label.setText("Regions: " + " | ".join(region_summaries))
+        else:
+            self.region_info_label.setText("Region: none")
+
+    def _append_analysis_rows_for_unit(self, unit: str, start: float, end: float) -> None:
+        channel_names = sorted(self.unit_curves.get(unit, {}).keys())
+
+        duration = max(0.0, end - start)
+        for channel_name in channel_names:
+            record = self.channels.get(channel_name)
+            if record is None or len(record.time) < 2:
+                continue
+
+            mask = (record.time >= start) & (record.time <= end)
+            if int(np.count_nonzero(mask)) < 2:
+                metric_values = self._empty_metric_values()
+            else:
+                window_time = record.time[mask]
+                window_values = record.values[mask]
+                metric_values = self._compute_metric_values(window_time, window_values, record.unit)
+
+            row_index = self.analysis_table.rowCount()
+            self.analysis_table.insertRow(row_index)
+            self.analysis_table.setItem(row_index, 0, QtWidgets.QTableWidgetItem(channel_name))
+            self.analysis_table.setItem(row_index, 1, QtWidgets.QTableWidgetItem(record.unit))
+            self.analysis_table.setItem(row_index, 2, QtWidgets.QTableWidgetItem(f"{duration:.6g}"))
+            col = 3
+            for metric_key in self.metric_order:
+                if metric_key in self.enabled_metrics:
+                    self.analysis_table.setItem(row_index, col, QtWidgets.QTableWidgetItem(metric_values[metric_key]))
+                    col += 1
+
+    def _integral_unit_for(self, input_unit: str) -> str:
+        if "/s" in input_unit:
+            return input_unit.split("/s", 1)[0].strip() or "(unitless)"
+        return f"{input_unit}*s"
+
+    def _clear_analysis_table(self) -> None:
+        self.analysis_table.setRowCount(0)
+        self.region_info_label.setText("Region: none")
+
+    def _rebuild_analysis_table_columns(self) -> None:
+        headers = ["Channel", "Unit", "Duration (s)"]
+        for metric_key in self.metric_order:
+            if metric_key in self.enabled_metrics:
+                headers.append(self.metric_labels[metric_key])
+
+        self.analysis_table.setColumnCount(len(headers))
+        self.analysis_table.setHorizontalHeaderLabels(headers)
+        header = self.analysis_table.horizontalHeader()
+        if len(headers) > 0:
+            header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        for col in range(1, len(headers)):
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
+
+    def _set_metric_enabled(self, metric_key: str, enabled: bool) -> None:
+        if metric_key not in self.metric_labels:
+            return
+
+        if enabled:
+            self.enabled_metrics.add(metric_key)
+        else:
+            self.enabled_metrics.discard(metric_key)
+
+        self._sync_metric_action_checks()
+        self._rebuild_analysis_table_columns()
+        if self.unit_regions:
+            self._refresh_analysis_table_from_active_regions()
+        else:
+            self._clear_analysis_table()
+
+    def _sync_metric_action_checks(self) -> None:
+        for action_map in self.unit_metric_actions.values():
+            for metric_key, action in action_map.items():
+                should_check = metric_key in self.enabled_metrics
+                old_state = action.blockSignals(True)
+                action.setChecked(should_check)
+                action.blockSignals(old_state)
+
+    def _empty_metric_values(self) -> Dict[str, str]:
+        return {key: "n/a" for key in self.metric_order}
+
+    def _compute_metric_values(self, time_values: np.ndarray, signal_values: np.ndarray, input_unit: str) -> Dict[str, str]:
+        values = self._empty_metric_values()
+
+        integral_value = float(np.trapezoid(signal_values, time_values))
+        values["integral"] = f"{integral_value:.6g} {self._integral_unit_for(input_unit)}"
+        values["min"] = f"{float(np.min(signal_values)):.6g}"
+        values["max"] = f"{float(np.max(signal_values)):.6g}"
+        values["mean"] = f"{float(np.mean(signal_values)):.6g}"
+        values["rms"] = f"{float(np.sqrt(np.mean(np.square(signal_values)))):.6g}"
+        values["std"] = f"{float(np.std(signal_values)):.6g}"
+        return values
+
+    def _reload_if_file_loaded(self) -> None:
+        if self.current_file is not None:
+            self._reload_current_file_data()
+
+    def _warn_derived(self, message: str) -> None:
+        QtWidgets.QMessageBox.warning(self, "Derived channel", message)
+
+    def _load_derived_config(self) -> None:
+        self.derived_channels = {}
+        if not self._derived_config_file.exists():
+            return
+
+        try:
+            payload = json.loads(self._derived_config_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        entries = payload.get("channels", []) if isinstance(payload, dict) else []
+        if not isinstance(entries, list):
+            return
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "")).strip()
+            expression = str(entry.get("expression", "")).strip()
+            unit = str(entry.get("unit", "")).strip() or "derived"
+            if not name or not expression:
+                continue
+            self.derived_channels[name] = DerivedChannelDefinition(name=name, expression=expression, unit=unit)
+
+    def _save_derived_config(self) -> None:
+        self._derived_config_dir.mkdir(parents=True, exist_ok=True)
+        entries = [
+            {"name": item.name, "expression": item.expression, "unit": item.unit}
+            for item in sorted(self.derived_channels.values(), key=lambda d: d.name.lower())
+        ]
+        payload = {"channels": entries}
+        self._derived_config_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _refresh_derived_list(self) -> None:
+        self.derived_list.clear()
+        for definition in sorted(self.derived_channels.values(), key=lambda d: d.name.lower()):
+            text = f"{definition.name} = {definition.expression} [{definition.unit}]"
+            item = QtWidgets.QListWidgetItem(text)
+            item.setData(QtCore.Qt.UserRole, definition.name)
+            self.derived_list.addItem(item)
+
+    def _on_derived_selected(self) -> None:
+        item = self.derived_list.currentItem()
+        if item is None:
+            return
+
+        name = item.data(QtCore.Qt.UserRole)
+        if not isinstance(name, str):
+            return
+
+        definition = self.derived_channels.get(name)
+        if definition is None:
+            return
+
+        self.derived_name_edit.setText(definition.name)
+        self.derived_expr_edit.setText(definition.expression)
+        self.derived_unit_edit.setText(definition.unit)
+
+    def _apply_derived_channels_to_loaded_data(self) -> None:
+        for definition in sorted(self.derived_channels.values(), key=lambda d: d.name.lower()):
+            result = self._build_derived_channel_record(definition, show_errors=False)
+            if result is not None:
+                self.channels[definition.name] = result
+
+    def _add_or_update_derived_channel(self) -> None:
+        name = self.derived_name_edit.text().strip()
+        expression = self.derived_expr_edit.text().strip()
+        unit = self.derived_unit_edit.text().strip() or "derived"
+
+        if not name:
+            self._warn_derived("Please provide a channel name.")
+            return
+        if not expression:
+            self._warn_derived("Please provide an expression.")
+            return
+        if name in self.base_channels:
+            self._warn_derived("Name conflicts with a source channel. Pick a different derived name.")
+            return
+
+        definition = DerivedChannelDefinition(name=name, expression=expression, unit=unit)
+        result = self._build_derived_channel_record(definition, show_errors=True)
+        if result is None:
+            return
+
+        self.derived_channels[name] = definition
+        self._save_derived_config()
+        self._refresh_derived_list()
+        self._reload_if_file_loaded()
+
+    def _remove_selected_derived_channel(self) -> None:
+        item = self.derived_list.currentItem()
+        if item is None:
+            return
+
+        name = item.data(QtCore.Qt.UserRole)
+        if not isinstance(name, str):
+            return
+
+        if name in self.derived_channels:
+            self.derived_channels.pop(name, None)
+            self._save_derived_config()
+            self._refresh_derived_list()
+        self._reload_if_file_loaded()
+
+    def _build_derived_channel_record(
+        self,
+        definition: DerivedChannelDefinition,
+        show_errors: bool,
+    ) -> ChannelRecord | None:
+        if ne is None:
+            if show_errors:
+                self._warn_derived("numexpr is not installed. Install with: pip install numexpr")
+            return None
+
+        variable_names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", definition.expression))
+        values_context: Dict[str, np.ndarray] = {}
+        reference_time: np.ndarray | None = None
+
+        for variable in variable_names:
+            record = self.base_channels.get(variable)
+            if record is None:
+                if show_errors:
+                    self._warn_derived(f"Unknown channel in expression: {variable}")
+                return None
+
+            if reference_time is None:
+                reference_time = record.time
+            else:
+                if len(reference_time) != len(record.time) or not np.array_equal(reference_time, record.time):
+                    if show_errors:
+                        self._warn_derived("All channels in a derived expression must share the same time axis.")
+                    return None
+
+            values_context[variable] = record.values
+
+        if reference_time is None:
+            if show_errors:
+                self._warn_derived("Expression must reference at least one channel.")
+            return None
+
+        try:
+            evaluated = ne.evaluate(definition.expression, local_dict=values_context)
+            derived_values = np.asarray(evaluated, dtype=float)
+        except Exception as exc:
+            if show_errors:
+                self._warn_derived(f"Failed to evaluate expression:\n{exc}")
+            return None
+
+        if derived_values.shape != reference_time.shape:
+            if show_errors:
+                self._warn_derived("Expression did not produce a single vector aligned to the input time axis.")
+            return None
+
+        return ChannelRecord(
+            name=definition.name,
+            unit=definition.unit,
+            signal_type="derived",
+            samples=len(reference_time),
+            time=reference_time,
+            values=derived_values,
+        )
 
 
 class H5ViewerWindow(BaseWindow):

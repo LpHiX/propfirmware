@@ -1,0 +1,9 @@
+{
+  "channels": [
+    {
+      "name": "flow_lps",
+      "expression": "fms_fm0_flowrate / 60",
+      "unit": "l/s"
+    }
+  ]
+}
