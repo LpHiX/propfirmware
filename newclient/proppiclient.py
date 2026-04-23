@@ -15,8 +15,8 @@ import pyqtgraph as pg
 import numpy as np
 
 PLOT_SECONDS = 30
-PLOT_UPDATE_INTERVAL_MS = 20
-REQUEST_STATES_INTERVAL_MS = 20
+PLOT_UPDATE_INTERVAL_MS = 50
+REQUEST_STATES_INTERVAL_MS = 50
 BACKEND_META_INTERVAL_MS = 100
 
 class UDPManager(QObject):
@@ -307,7 +307,8 @@ class PyroControllerWidget(ActuatorControllerWidget):
             self.powered_label.setText(f"Powered: {powered}")
         except KeyError:
             self.powered_label.setText("Powered: No data")
-colors = ['y', 'r', 'c', 'b', 'm', 'y', 'k']
+# High-contrast colors for dark pyqtgraph backgrounds.
+colors = ['y', 'r', 'c', 'b', 'm', 'g', 'w']
 pt_number = 0
 class SensorControllerWidget(QWidget):
     """"Base class for all sensor controller widgets"""
@@ -443,7 +444,7 @@ class SensorControllerWidget(QWidget):
                         else:
                             raw_display = f"{raw_value:.0f}"
                         value_label.setText(
-                            f"<span>{value:.1f}</span> "
+                            f"<span>{value:.3f}</span> "
                             f"<span style='font-size: 24px;'> {raw_display}mV</span>"
                         )
                     else:

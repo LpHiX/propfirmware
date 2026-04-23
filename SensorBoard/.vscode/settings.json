@@ -1,0 +1,7 @@
+{
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.arguments": [
+        "--log=verbose",
+        "--query-driver=**\\bin\\xtensa-*-elf-*.exe,**\\bin\\riscv32-*-elf-*.exe"
+    ]
+}
