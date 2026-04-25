@@ -1,8 +1,11 @@
 import argparse
+import ctypes
+import ctypes
 import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Any, Dict, cast
 
 import h5py
@@ -115,9 +118,13 @@ class H5FileTab(BaseWidget):
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(6)
 
-        self.file_label = QtWidgets.QLabel("No file loaded")
-        self.file_label.setWordWrap(True)
-        left_layout.addWidget(self.file_label)
+        # self.file_label = QtWidgets.QLabel("No file loaded")
+        # self.file_label.setWordWrap(True)
+        # left_layout.addWidget(self.file_label)
+
+        self.note_label = QtWidgets.QLabel("Notes: (none)")
+        self.note_label.setWordWrap(True)
+        left_layout.addWidget(self.note_label)
 
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("Filter channels (name / unit / signal type)")
@@ -164,10 +171,8 @@ class H5FileTab(BaseWidget):
         self.derived_help_label.setWordWrap(True)
         derived_layout.addWidget(self.derived_help_label)
 
-        left_layout.addWidget(derived_box)
-
-        self.channel_table = QtWidgets.QTableWidget(0, 5)
-        self.channel_table.setHorizontalHeaderLabels(["Plot", "Channel", "Unit", "Signal", "Samples"])
+        self.channel_table = QtWidgets.QTableWidget(0, 3)
+        self.channel_table.setHorizontalHeaderLabels(["Plot", "Channel", "Unit"])
         self.channel_table.verticalHeader().setVisible(False)
         self.channel_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.channel_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -179,9 +184,40 @@ class H5FileTab(BaseWidget):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
         left_layout.addWidget(self.channel_table, 1)
+
+        self.derived_table_toggle = QtWidgets.QToolButton()
+        self.derived_table_toggle.setCheckable(True)
+        self.derived_table_toggle.setChecked(False)
+        self.derived_table_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.derived_table_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.derived_table_toggle.setText("Derived channels (0)")
+        left_layout.addWidget(self.derived_table_toggle)
+
+        self.derived_table_container = QtWidgets.QWidget()
+        derived_table_layout = QtWidgets.QVBoxLayout(self.derived_table_container)
+        derived_table_layout.setContentsMargins(0, 0, 0, 0)
+        derived_table_layout.setSpacing(6)
+
+        derived_table_layout.addWidget(derived_box)
+
+        self.derived_table = QtWidgets.QTableWidget(0, 3)
+        self.derived_table.setHorizontalHeaderLabels(["Plot", "Channel", "Unit"])
+        self.derived_table.verticalHeader().setVisible(False)
+        self.derived_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.derived_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.derived_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.derived_table.setAlternatingRowColors(True)
+        self.derived_table.setSortingEnabled(True)
+        derived_header = self.derived_table.horizontalHeader()
+        derived_header.setStretchLastSection(False)
+        derived_header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        derived_header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        derived_header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        derived_table_layout.addWidget(self.derived_table)
+
+        self.derived_table_container.setVisible(False)
+        left_layout.addWidget(self.derived_table_container)
 
         self.clear_button = QtWidgets.QPushButton("Clear all plotted channels")
         left_layout.addWidget(self.clear_button)
@@ -219,8 +255,15 @@ class H5FileTab(BaseWidget):
 
     def _connect_signals(self) -> None:
         self.search_edit.textChanged.connect(self._apply_table_filter)
-        self.channel_table.cellClicked.connect(self._on_table_clicked)
-        self.channel_table.itemChanged.connect(self._on_table_item_changed)
+        self.channel_table.cellClicked.connect(
+            lambda row, col: self._on_table_clicked(self.channel_table, row, col)
+        )
+        self.channel_table.itemChanged.connect(lambda item: self._on_table_item_changed(self.channel_table, item))
+        self.derived_table.cellClicked.connect(
+            lambda row, col: self._on_table_clicked(self.derived_table, row, col)
+        )
+        self.derived_table.itemChanged.connect(lambda item: self._on_table_item_changed(self.derived_table, item))
+        self.derived_table_toggle.clicked.connect(self._toggle_derived_table_visibility)
         self.use_raw_checkbox.stateChanged.connect(self._reload_current_file_data)
         self.link_x_checkbox.stateChanged.connect(self._relink_unit_plots)
         self.clear_button.clicked.connect(self._clear_all_channels)
@@ -228,7 +271,7 @@ class H5FileTab(BaseWidget):
         self.remove_derived_button.clicked.connect(self._remove_selected_derived_channel)
         self.derived_list.itemSelectionChanged.connect(self._on_derived_selected)
 
-    def load_file(self, path: Path) -> None:
+    def load_file(self, path: Path, note_text: str = "") -> None:
         try:
             self.base_channels = self._read_channels(path, use_raw=self.use_raw_checkbox.isChecked())
             self.channels = dict(self.base_channels)
@@ -249,7 +292,9 @@ class H5FileTab(BaseWidget):
         self._clear_plot_widgets()
         self._clear_analysis_table()
 
-        self.file_label.setText(f"Loaded: {path}")
+        # self.file_label.setText(f"Loaded: {path}")
+        cleaned_note = " ".join(note_text.split())
+        self.note_label.setText(f"Notes: {cleaned_note}" if cleaned_note else "Notes: (none)")
         self._refresh_derived_list()
         self._populate_channel_table()
 
@@ -299,48 +344,25 @@ class H5FileTab(BaseWidget):
 
         return channels
 
-    def _populate_channel_table(self) -> None:
-        self.channel_table.setSortingEnabled(False)
-        self.channel_table.setRowCount(0)
-
-        for row, name in enumerate(sorted(self.channels.keys())):
-            channel = self.channels[name]
-            self.channel_table.insertRow(row)
-
-            check_item = QtWidgets.QTableWidgetItem("")
-            check_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
-            check_item.setCheckState(QtCore.Qt.Unchecked)
-            check_item.setData(QtCore.Qt.UserRole, channel.name)
-            self.channel_table.setItem(row, 0, check_item)
-
-            self.channel_table.setItem(row, 1, QtWidgets.QTableWidgetItem(channel.name))
-            self.channel_table.setItem(row, 2, QtWidgets.QTableWidgetItem(channel.unit))
-            self.channel_table.setItem(row, 3, QtWidgets.QTableWidgetItem(channel.signal_type))
-            self.channel_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(channel.samples)))
-
-        self.channel_table.setSortingEnabled(True)
-        self._apply_table_filter()
-
     def _apply_table_filter(self) -> None:
         query = self.search_edit.text().strip().lower()
-        for row in range(self.channel_table.rowCount()):
-            name_item = self.channel_table.item(row, 1)
-            unit_item = self.channel_table.item(row, 2)
-            signal_item = self.channel_table.item(row, 3)
-            haystack = " ".join(
-                [
-                    name_item.text().lower() if name_item else "",
-                    unit_item.text().lower() if unit_item else "",
-                    signal_item.text().lower() if signal_item else "",
-                ]
-            )
-            self.channel_table.setRowHidden(row, query not in haystack)
+        for table in (self.channel_table, self.derived_table):
+            for row in range(table.rowCount()):
+                name_item = table.item(row, 1)
+                unit_item = table.item(row, 2)
+                haystack = " ".join(
+                    [
+                        name_item.text().lower() if name_item else "",
+                        unit_item.text().lower() if unit_item else "",
+                    ]
+                )
+                table.setRowHidden(row, query not in haystack)
 
-    def _on_table_clicked(self, row: int, column: int) -> None:
+    def _on_table_clicked(self, table, row: int, column: int) -> None:
         if column == 0:
             return
 
-        check_item = self.channel_table.item(row, 0)
+        check_item = table.item(row, 0)
         if check_item is None:
             return
 
@@ -351,7 +373,7 @@ class H5FileTab(BaseWidget):
         new_checked = check_item.checkState() != QtCore.Qt.Checked
         self._set_table_checked(channel_name, new_checked)
 
-    def _on_table_item_changed(self, item) -> None:
+    def _on_table_item_changed(self, _table, item) -> None:
         if self._table_mutation:
             return
         if item.column() != 0:
@@ -367,13 +389,14 @@ class H5FileTab(BaseWidget):
     def _set_table_checked(self, channel_name: str, checked: bool) -> None:
         self._table_mutation = True
         try:
-            for row in range(self.channel_table.rowCount()):
-                check_item = self.channel_table.item(row, 0)
-                if check_item is None:
-                    continue
-                if check_item.data(QtCore.Qt.UserRole) == channel_name:
-                    check_item.setCheckState(QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked)
-                    break
+            for table in (self.channel_table, self.derived_table):
+                for row in range(table.rowCount()):
+                    check_item = table.item(row, 0)
+                    if check_item is None:
+                        continue
+                    if check_item.data(QtCore.Qt.UserRole) == channel_name:
+                        check_item.setCheckState(QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked)
+                        break
         finally:
             self._table_mutation = False
 
@@ -387,6 +410,8 @@ class H5FileTab(BaseWidget):
         had_no_channels = len(self.selected_channels) == 0
 
         if enabled:
+            if channel_name in self.selected_channels and channel_name in self.unit_curves.get(channel.unit, {}):
+                return
             self.selected_channels.add(channel_name)
             self._ensure_unit_plot(channel.unit)
             self._add_curve(channel)
@@ -411,6 +436,9 @@ class H5FileTab(BaseWidget):
         plot.addLegend(offset=(8, 8))
 
         view_box = plot.getViewBox()
+        auto_axis_action = QtGui.QAction("Auto Axis", plot)
+        auto_axis_action.triggered.connect(lambda _checked=False, p=plot: self._auto_axis_plot(p))
+
         toggle_action = QtGui.QAction("Select Region", plot)
         toggle_action.triggered.connect(lambda _checked=False, unit_name=unit: self._toggle_region_for_unit(unit_name))
         metrics_menu = QtWidgets.QMenu("Region Metrics", plot)
@@ -427,6 +455,7 @@ class H5FileTab(BaseWidget):
 
         if hasattr(view_box, "menu") and view_box.menu is not None:
             view_box.menu.addSeparator()
+            view_box.menu.addAction(auto_axis_action)
             view_box.menu.addAction(toggle_action)
             view_box.menu.addMenu(metrics_menu)
 
@@ -437,11 +466,20 @@ class H5FileTab(BaseWidget):
         self.unit_metric_actions[unit] = metric_actions
         self._relink_unit_plots()
 
+    def _auto_axis_plot(self, plot) -> None:
+        view_box = plot.getViewBox()
+        view_box.enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
+        view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+        plot.autoRange()
+
     def _add_curve(self, channel: ChannelRecord) -> None:
         if channel.name not in self.channel_color:
             self.channel_color[channel.name] = next(self.color_cycle)
 
         plot = self.unit_plots[channel.unit]
+        existing_curve = self.unit_curves[channel.unit].pop(channel.name, None)
+        if existing_curve is not None:
+            plot.removeItem(existing_curve)
         x_values, y_values = self._downsample_for_display(channel.time, channel.values)
         pen = pg.mkPen(self.channel_color[channel.name], width=2)
         curve = plot.plot(x_values, y_values, pen=pen, name=channel.name)
@@ -517,11 +555,14 @@ class H5FileTab(BaseWidget):
         self._clear_plot_widgets()
         self._clear_analysis_table()
 
-        for row in range(self.channel_table.rowCount()):
-            self._table_mutation = True
-            check_item = self.channel_table.item(row, 0)
-            if check_item is not None:
-                check_item.setCheckState(QtCore.Qt.Unchecked)
+        self._table_mutation = True
+        try:
+            for table in (self.channel_table, self.derived_table):
+                for row in range(table.rowCount()):
+                    check_item = table.item(row, 0)
+                    if check_item is not None:
+                        check_item.setCheckState(QtCore.Qt.Unchecked)
+        finally:
             self._table_mutation = False
 
     def _clear_plot_widgets(self) -> None:
@@ -894,6 +935,46 @@ class H5FileTab(BaseWidget):
             values=derived_values,
         )
 
+    def _toggle_derived_table_visibility(self, expanded: bool) -> None:
+        self.derived_table_container.setVisible(expanded)
+        self.derived_table_toggle.setArrowType(QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow)
+
+    def _populate_channel_table(self) -> None:
+        base_names = sorted(self.base_channels.keys())
+        derived_names = sorted(name for name in self.channels.keys() if name not in self.base_channels)
+
+        self._populate_table_widget(self.channel_table, base_names)
+        self._populate_table_widget(self.derived_table, derived_names)
+
+        self.derived_table_toggle.setText(f"Derived channels ({len(derived_names)})")
+        if not derived_names:
+            self.derived_table_toggle.setChecked(False)
+            self.derived_table_container.setVisible(False)
+            self.derived_table_toggle.setArrowType(QtCore.Qt.RightArrow)
+            self.derived_table_toggle.setEnabled(False)
+        else:
+            self.derived_table_toggle.setEnabled(True)
+
+    def _populate_table_widget(self, table, names: list[str]) -> None:
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
+
+        for row, name in enumerate(names):
+            channel = self.channels[name]
+            table.insertRow(row)
+
+            check_item = QtWidgets.QTableWidgetItem("")
+            check_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
+            check_item.setCheckState(QtCore.Qt.Unchecked)
+            check_item.setData(QtCore.Qt.UserRole, channel.name)
+            table.setItem(row, 0, check_item)
+
+            table.setItem(row, 1, QtWidgets.QTableWidgetItem(channel.name))
+            table.setItem(row, 2, QtWidgets.QTableWidgetItem(channel.unit))
+
+        table.setSortingEnabled(True)
+        self._apply_table_filter()
+
 
 class H5ViewerWindow(BaseWindow):
     def __init__(self) -> None:
@@ -902,6 +983,15 @@ class H5ViewerWindow(BaseWindow):
         self.resize(1450, 900)
 
         self.current_folder: Path | None = None
+        self.file_note_cache: Dict[Path, str] = {}
+        self.post_file_notes: Dict[str, str] = {}
+        self.notable_excluded_keys: set[str] = set()
+        self._viewer_config_dir = Path(__file__).resolve().parent / "h5viewer_config"
+        self._post_notes_file = self._viewer_config_dir / "post_test_notes.json"
+        self._notable_exclusions_file = self._viewer_config_dir / "notable_exclusions.json"
+
+        self._load_post_test_notes()
+        self._load_notable_exclusions()
 
         self._build_tabs()
         self._build_menu()
@@ -928,18 +1018,31 @@ class H5ViewerWindow(BaseWindow):
         self.folder_label.setWordWrap(True)
         self.open_folder_button = QtWidgets.QPushButton("Choose Folder...")
         self.refresh_folder_button = QtWidgets.QPushButton("Refresh")
+        self.expand_collapse_toggle = QtWidgets.QToolButton()
+        self.expand_collapse_toggle.setCheckable(True)
+        self.expand_collapse_toggle.setChecked(False)
+        self.expand_collapse_toggle.setText("Expand All")
         top_row.addWidget(self.folder_label, 1)
+        self.show_notable_only_checkbox = QtWidgets.QCheckBox("Show only notable")
+        self.show_notable_only_checkbox.setChecked(False)
+        top_row.addWidget(self.show_notable_only_checkbox)
+        top_row.addWidget(self.expand_collapse_toggle)
         top_row.addWidget(self.open_folder_button)
         top_row.addWidget(self.refresh_folder_button)
         folder_layout.addLayout(top_row)
 
         self.file_tree = QtWidgets.QTreeWidget()
-        self.file_tree.setColumnCount(2)
-        self.file_tree.setHeaderLabels(["File", "Size (KiB)"])
+        self.file_tree.setColumnCount(5)
+        self.file_tree.setHeaderLabels(["File", "Size (KiB)", "Notes", "Post Notes", "Excluded"])
         self.file_tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.file_tree.setUniformRowHeights(True)
         self.file_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.file_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.file_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        self.file_tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        self.file_tree.header().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
+        self.file_tree.setColumnWidth(4, 26)
+        self.file_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         folder_layout.addWidget(self.file_tree, 1)
 
         open_row = QtWidgets.QHBoxLayout()
@@ -977,8 +1080,11 @@ class H5ViewerWindow(BaseWindow):
     def _connect_signals(self) -> None:
         self.open_folder_button.clicked.connect(self._open_folder_dialog)
         self.refresh_folder_button.clicked.connect(self._refresh_folder_list)
+        self.show_notable_only_checkbox.stateChanged.connect(self._refresh_folder_list)
+        self.expand_collapse_toggle.clicked.connect(self._on_expand_collapse_toggled)
         self.open_selected_button.clicked.connect(self._open_selected_from_list)
         self.file_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
+        self.file_tree.customContextMenuRequested.connect(self._on_file_tree_context_menu)
         self.tabs.tabCloseRequested.connect(self._close_tab_by_index)
 
     def _open_file_dialog(self) -> None:
@@ -1002,6 +1108,7 @@ class H5ViewerWindow(BaseWindow):
 
     def _set_folder(self, folder: Path) -> None:
         self.current_folder = folder
+        self.file_note_cache = {}
         self.folder_label.setText(str(folder))
         self._refresh_folder_list()
         self.tabs.setCurrentIndex(0)
@@ -1032,12 +1139,14 @@ class H5ViewerWindow(BaseWindow):
 
         # Sort groups by latest file timestamp (newest first).
         sorted_groups = sorted(groups.keys(), key=lambda name: group_latest_mtime.get(name, 0.0), reverse=True)
-        for idx, group_name in enumerate(sorted_groups):
-            group_item = QtWidgets.QTreeWidgetItem([group_name, ""])
+        visible_files = 0
+        show_only_notable = self.show_notable_only_checkbox.isChecked()
+        for group_name in sorted_groups:
+            file_paths = sorted(groups[group_name], key=lambda p: p.stat().st_mtime, reverse=True)
+            group_item = QtWidgets.QTreeWidgetItem([group_name, "", "", "", ""])
             group_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
             group_item.setData(0, QtCore.Qt.UserRole, None)
 
-            file_paths = sorted(groups[group_name], key=lambda p: p.stat().st_mtime, reverse=True)
             for path in file_paths:
                 rel_path = path.relative_to(self.current_folder)
                 if group_name == "(root)":
@@ -1045,18 +1154,38 @@ class H5ViewerWindow(BaseWindow):
                 else:
                     display_name = str(Path(*rel_path.parts[1:]))
                 size_kib = int(path.stat().st_size / 1024)
-                child = QtWidgets.QTreeWidgetItem([display_name, str(size_kib)])
+                file_note = self._format_note_for_tree(self._resolve_note_for_file(path))
+                post_note = self._format_note_for_tree(self._resolve_post_note_for_file(path))
+                is_excluded_from_notable = self._is_excluded_from_notable(path)
+                if show_only_notable and (is_excluded_from_notable or (not file_note and not post_note)):
+                    continue
+
+                excluded_marker = "X" if is_excluded_from_notable else ""
+                child = QtWidgets.QTreeWidgetItem([display_name, str(size_kib), file_note, post_note, excluded_marker])
                 child.setData(0, QtCore.Qt.UserRole, str(path))
                 child.setToolTip(0, str(rel_path))
+                if file_note:
+                    child.setToolTip(2, file_note)
+                if post_note:
+                    child.setToolTip(3, post_note)
+                if is_excluded_from_notable:
+                    child.setToolTip(4, "Excluded from notable")
                 group_item.addChild(child)
+                visible_files += 1
 
-            self.file_tree.addTopLevelItem(group_item)
-            if idx == 0:
-                group_item.setExpanded(True)
+            if group_item.childCount() > 0:
+                self.file_tree.addTopLevelItem(group_item)
 
-        self.statusBar().showMessage(
-            f"Found {len(files)} H5 files in {self.current_folder} (including two-level subfolders)"
-        )
+        self._apply_group_expansion_mode()
+
+        if show_only_notable:
+            self.statusBar().showMessage(
+                f"Showing {visible_files} notable H5 files in {self.current_folder}"
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Found {len(files)} H5 files in {self.current_folder} (including two-level subfolders)"
+            )
 
     def _on_tree_item_double_clicked(self, item, _column: int) -> None:
         value = item.data(0, QtCore.Qt.UserRole)
@@ -1065,6 +1194,26 @@ class H5ViewerWindow(BaseWindow):
             return
 
         item.setExpanded(not item.isExpanded())
+
+    def _on_expand_collapse_toggled(self, checked: bool) -> None:
+        self.expand_collapse_toggle.setText("Collapse All" if checked else "Expand All")
+        self._apply_group_expansion_mode()
+
+    def _apply_group_expansion_mode(self) -> None:
+        if self.expand_collapse_toggle.isChecked():
+            self._set_all_groups_expanded(True)
+            return
+
+        self._set_all_groups_expanded(False)
+        first_item = self.file_tree.topLevelItem(0)
+        if first_item is not None:
+            first_item.setExpanded(True)
+
+    def _set_all_groups_expanded(self, expanded: bool) -> None:
+        for row in range(self.file_tree.topLevelItemCount()):
+            group_item = self.file_tree.topLevelItem(row)
+            if group_item is not None:
+                group_item.setExpanded(expanded)
 
     def _discover_h5_files(self, root: Path) -> list[Path]:
         files: list[Path] = []
@@ -1102,7 +1251,7 @@ class H5ViewerWindow(BaseWindow):
             return
 
         tab = H5FileTab()
-        tab.load_file(path)
+        tab.load_file(path, note_text=self._resolve_note_for_file(path))
         tab_index = self.tabs.addTab(tab, path.name)
         self.tabs.setTabToolTip(tab_index, str(path))
         self.tabs.setCurrentIndex(tab_index)
@@ -1126,6 +1275,187 @@ class H5ViewerWindow(BaseWindow):
         if widget is not None:
             widget.deleteLater()
 
+    def _on_file_tree_context_menu(self, pos) -> None:
+        item = self.file_tree.itemAt(pos)
+        if item is None:
+            return
+
+        value = item.data(0, QtCore.Qt.UserRole)
+        if not isinstance(value, str):
+            return
+
+        path = Path(value)
+        existing_note = self._resolve_post_note_for_file(path)
+
+        menu = QtWidgets.QMenu(self)
+        edit_action = menu.addAction("Add / Edit Post Note")
+        clear_action = menu.addAction("Clear Post Note")
+        exclude_action = menu.addAction(
+            "Include in notable" if self._is_excluded_from_notable(path) else "Exclude from notable"
+        )
+        clear_action.setEnabled(bool(existing_note))
+
+        selected_action = menu.exec(self.file_tree.viewport().mapToGlobal(pos))
+        if selected_action is edit_action:
+            self._prompt_edit_post_note(path)
+        elif selected_action is clear_action:
+            self._set_post_note_for_file(path, "")
+        elif selected_action is exclude_action:
+            self._set_excluded_from_notable(path, not self._is_excluded_from_notable(path))
+
+    def _prompt_edit_post_note(self, path: Path) -> None:
+        current_value = self._resolve_post_note_for_file(path)
+        note_value, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Post Test Note",
+            "Enter post-test note:",
+            QtWidgets.QLineEdit.Normal,
+            current_value,
+        )
+        if not ok:
+            return
+        self._set_post_note_for_file(path, str(note_value))
+
+    def _set_post_note_for_file(self, path: Path, note_text: str) -> None:
+        key = self._post_note_key(path)
+        clean_note = " ".join(note_text.split()).strip()
+        if clean_note:
+            self.post_file_notes[key] = clean_note
+        else:
+            self.post_file_notes.pop(key, None)
+
+        self._save_post_test_notes()
+        self._refresh_folder_list()
+
+    def _post_note_key(self, path: Path) -> str:
+        if self.current_folder is not None:
+            try:
+                rel_path = path.resolve().relative_to(self.current_folder.resolve())
+                return f"{self.current_folder.resolve()}::{str(rel_path).replace('\\\\', '/')}"
+            except Exception:
+                pass
+        return str(path.resolve())
+
+    def _resolve_post_note_for_file(self, path: Path) -> str:
+        return self.post_file_notes.get(self._post_note_key(path), "")
+
+    def _is_excluded_from_notable(self, path: Path) -> bool:
+        return self._post_note_key(path) in self.notable_excluded_keys
+
+    def _set_excluded_from_notable(self, path: Path, excluded: bool) -> None:
+        key = self._post_note_key(path)
+        if excluded:
+            self.notable_excluded_keys.add(key)
+        else:
+            self.notable_excluded_keys.discard(key)
+
+        self._save_notable_exclusions()
+        self._refresh_folder_list()
+
+    def _load_post_test_notes(self) -> None:
+        self.post_file_notes = {}
+        if not self._post_notes_file.exists():
+            return
+
+        try:
+            payload = json.loads(self._post_notes_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        for key, value in payload.items():
+            if not isinstance(key, str):
+                continue
+            if not isinstance(value, str):
+                continue
+            clean_value = " ".join(value.split()).strip()
+            if clean_value:
+                self.post_file_notes[key] = clean_value
+
+    def _save_post_test_notes(self) -> None:
+        self._viewer_config_dir.mkdir(parents=True, exist_ok=True)
+        ordered = {key: self.post_file_notes[key] for key in sorted(self.post_file_notes.keys())}
+        self._post_notes_file.write_text(json.dumps(ordered, indent=2), encoding="utf-8")
+
+    def _load_notable_exclusions(self) -> None:
+        self.notable_excluded_keys = set()
+        if not self._notable_exclusions_file.exists():
+            return
+
+        try:
+            payload = json.loads(self._notable_exclusions_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        if isinstance(payload, dict):
+            entries = payload.get("excluded", [])
+            if isinstance(entries, list):
+                for item in entries:
+                    if isinstance(item, str) and item:
+                        self.notable_excluded_keys.add(item)
+            return
+
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, str) and item:
+                    self.notable_excluded_keys.add(item)
+
+    def _save_notable_exclusions(self) -> None:
+        self._viewer_config_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"excluded": sorted(self.notable_excluded_keys)}
+        self._notable_exclusions_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _resolve_note_for_file(self, path: Path) -> str:
+        cached = self.file_note_cache.get(path)
+        if cached is not None:
+            return cached
+
+        note = ""
+        try:
+            with h5py.File(path, "r") as h5:
+                config_group = h5.get("config")
+                if isinstance(config_group, h5py.Group) and "notes" in config_group:
+                    notes_node = config_group["notes"]
+                    if isinstance(notes_node, h5py.Dataset):
+                        note = self._coerce_note_text(notes_node[()])
+                    elif isinstance(notes_node, h5py.Group):
+                        # If notes is unexpectedly a group, concatenate simple string-like entries.
+                        fragments: list[str] = []
+                        for value in notes_node.values():
+                            if isinstance(value, h5py.Dataset):
+                                text_value = self._coerce_note_text(value[()])
+                                if text_value:
+                                    fragments.append(text_value)
+                        note = "\n".join(fragments)
+        except Exception:
+            note = ""
+
+        normalized = " ".join(note.split()).strip()
+        self.file_note_cache[path] = normalized
+        return normalized
+
+    def _coerce_note_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            return value
+        if isinstance(value, np.ndarray):
+            if value.shape == ():
+                return self._coerce_note_text(value.item())
+            parts = [self._coerce_note_text(item) for item in value.tolist()]
+            return "\n".join(part for part in parts if part)
+        return str(value)
+
+    def _format_note_for_tree(self, note: str, max_len: int = 120) -> str:
+        clean_note = " ".join(note.split())
+        if len(clean_note) <= max_len:
+            return clean_note
+        return clean_note[: max_len - 3].rstrip() + "..."
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="BoardStateLogger H5 interactive viewer")
@@ -1140,6 +1470,15 @@ def main() -> int:
     app = QtWidgets.QApplication([])
     pg.setConfigOptions(antialias=False, foreground="#d8dee9", background="#111217")
 
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("propfirmware.newclient.propclient")
+        except Exception:
+            pass
+
+    app_icon = Path("assets/h5viewer.ico")
+    if app_icon.exists():
+        app.setWindowIcon(QtGui.QIcon(str(app_icon)))
     window = H5ViewerWindow()
     window.show()
 

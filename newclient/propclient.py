@@ -2,10 +2,13 @@ import socket
 import sys
 import json
 import signal
+import ctypes
+from pathlib import Path
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QPushButton, 
                              QTextEdit, QVBoxLayout, QHBoxLayout, QWidget,
                              QLabel, QSlider, QGroupBox, QGridLayout, QLineEdit, QTabWidget)
+from PySide6.QtGui import QIcon, QAction
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtNetwork import QUdpSocket, QHostAddress
 from PySide6.QtCore import QTimer, QByteArray, Slot
@@ -15,9 +18,12 @@ import pyqtgraph as pg
 import numpy as np
 
 PLOT_SECONDS = 30
-PLOT_UPDATE_INTERVAL_MS = 50
-REQUEST_STATES_INTERVAL_MS = 50
+PLOT_UPDATE_INTERVAL_MS = 100
+REQUEST_STATES_INTERVAL_MS = 100
 BACKEND_META_INTERVAL_MS = 100
+SENSOR_PLOT_MIN_HEIGHT_PX = 90
+SENSOR_PLOT_MAX_HEIGHT_PX = 220
+LABEL_UPDATE_INTERVAL_MS = 100
 
 class UDPManager(QObject):
     dataReceived = Signal(str)
@@ -73,7 +79,7 @@ class UDPManager(QObject):
         while self.socket.hasPendingDatagrams():
             datagram_size = self.socket.pendingDatagramSize()
             data, host, port = self.socket.readDatagram(datagram_size)
-            self.dataReceived.emit(bytes(data).decode())
+            self.dataReceived.emit(bytes(data.data()).decode())
 
     @Slot()
     def send(self, data):
@@ -112,18 +118,20 @@ class ActuatorControllerWidget(QWidget):
         self.INPUT_WIDTH = 40
         
         # Create common layout
-        self.layout = QHBoxLayout()
-        self.setLayout(self.layout)
+        self.row_layout = QHBoxLayout()
+        self.row_layout.setContentsMargins(2, 1, 2, 1)
+        self.row_layout.setSpacing(5)
+        self.setLayout(self.row_layout)
         
         # Create common UI elements
         self.name_label = QLabel(f"{self.get_actuator_type_name()}: {self.actuator_name}")
         self.name_label.setMinimumWidth(self.LABEL_WIDTH)
-        self.layout.addWidget(self.name_label)
+        self.row_layout.addWidget(self.name_label)
         
         # Armed state is common to most actuators
         self.armed_label = QLabel(f"Armed: No data")
         self.armed_label.setMinimumWidth(self.LABEL_WIDTH)
-        self.layout.addWidget(self.armed_label)
+        self.row_layout.addWidget(self.armed_label)
         
         # Common arm/disarm buttons
         self.arm_button = QPushButton("Arm")
@@ -134,12 +142,12 @@ class ActuatorControllerWidget(QWidget):
         self.disarm_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.disarm_button.clicked.connect(lambda: self.send_command("armed", False))
         
-        self.layout.addWidget(self.arm_button)
-        self.layout.addWidget(self.disarm_button)
+        self.row_layout.addWidget(self.arm_button)
+        self.row_layout.addWidget(self.disarm_button)
         
         # Add specific UI elements
         self.setup_specific_ui()
-        self.layout.addStretch()
+        self.row_layout.addStretch()
     
     def send_command(self, command, value):
         """Send command to the actuator"""
@@ -195,17 +203,17 @@ class ServoControllerWidget(ActuatorControllerWidget):
         # Servo-specific UI elements
         self.angle_label = QLabel("Angle: No data")
         self.angle_label.setMinimumWidth(self.LABEL_WIDTH)
-        self.layout.addWidget(self.angle_label)
+        self.row_layout.addWidget(self.angle_label)
 
-        self.desired_angle_label = QLabel("Desired Angle: No data")
+        self.desired_angle_label = QLabel("Desired: No data")
         self.desired_angle_label.setMinimumWidth(self.LABEL_WIDTH)
-        self.layout.addWidget(self.desired_angle_label)
+        self.row_layout.addWidget(self.desired_angle_label)
         
         self.manual_angle = QLineEdit(self)
         self.manual_angle.setMinimumWidth(self.INPUT_WIDTH)
         self.manual_angle.setPlaceholderText("0")
         
-        self.manual_angle_button = QPushButton("Set Angle")
+        self.manual_angle_button = QPushButton("Set")
         self.manual_angle_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.manual_angle_button.clicked.connect(self.set_manual_angle)
 
@@ -213,9 +221,9 @@ class ServoControllerWidget(ActuatorControllerWidget):
         self.zero_angle_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.zero_angle_button.clicked.connect(self.set_zero_angle)
         
-        self.layout.addWidget(self.manual_angle)
-        self.layout.addWidget(self.manual_angle_button)
-        self.layout.addWidget(self.zero_angle_button)
+        self.row_layout.addWidget(self.manual_angle)
+        self.row_layout.addWidget(self.manual_angle_button)
+        self.row_layout.addWidget(self.zero_angle_button)
     
     def update_specific_states(self, states):
         try:
@@ -227,9 +235,9 @@ class ServoControllerWidget(ActuatorControllerWidget):
     def update_specific_desired_states(self, desired_states):
         try:
             desired_angle = desired_states[self.actuator_type][self.actuator_name]["angle"]
-            self.desired_angle_label.setText(f"Desired Angle: {desired_angle}")
+            self.desired_angle_label.setText(f"Desired: {desired_angle}")
         except KeyError:
-            self.desired_angle_label.setText("Desired Angle: No data")
+            self.desired_angle_label.setText("Desired: No data")
 
     def set_manual_angle(self):
         try:
@@ -255,7 +263,7 @@ class SolenoidControllerWidget(ActuatorControllerWidget):
         # Solenoid-specific UI elements
         self.powered_label = QLabel("Powered: No data")
         self.powered_label.setMinimumWidth(self.LABEL_WIDTH)
-        self.layout.addWidget(self.powered_label)
+        self.row_layout.addWidget(self.powered_label)
         
         self.poweron_button = QPushButton("Power On")
         self.poweron_button.setMinimumWidth(self.BUTTON_WIDTH)
@@ -265,8 +273,8 @@ class SolenoidControllerWidget(ActuatorControllerWidget):
         self.poweroff_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.poweroff_button.clicked.connect(lambda: self.send_command("powered", False))
         
-        self.layout.addWidget(self.poweron_button)
-        self.layout.addWidget(self.poweroff_button)
+        self.row_layout.addWidget(self.poweron_button)
+        self.row_layout.addWidget(self.poweroff_button)
     
     def update_specific_states(self, states):
         #print(f"Updating states for {self.actuator_name}: {states}")
@@ -287,7 +295,7 @@ class PyroControllerWidget(ActuatorControllerWidget):
         # Pyro-specific UI elements
         self.powered_label = QLabel("Powered: No data")
         self.powered_label.setMinimumWidth(self.LABEL_WIDTH)
-        self.layout.addWidget(self.powered_label)
+        self.row_layout.addWidget(self.powered_label)
         
         self.poweron_button = QPushButton("Power On")
         self.poweron_button.setMinimumWidth(self.BUTTON_WIDTH)
@@ -297,8 +305,8 @@ class PyroControllerWidget(ActuatorControllerWidget):
         self.poweroff_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.poweroff_button.clicked.connect(lambda: self.send_command("powered", False))
         
-        self.layout.addWidget(self.poweron_button)
-        self.layout.addWidget(self.poweroff_button)
+        self.row_layout.addWidget(self.poweron_button)
+        self.row_layout.addWidget(self.poweroff_button)
     
     def update_specific_states(self, states):
         #print(f"Updating states for {self.actuator_name}: {states}")
@@ -310,16 +318,28 @@ class PyroControllerWidget(ActuatorControllerWidget):
 # High-contrast colors for dark pyqtgraph backgrounds.
 colors = ['y', 'r', 'c', 'b', 'm', 'g', 'w']
 pt_number = 0
+UNIT_COLOR_PALETTE = [
+    '#f6e05e',  # yellow
+    '#00e5ff',  # cyan
+    '#ff5f57',  # red
+    '#4cff7f',  # green
+    '#c084fc',  # violet
+    '#ffffff',  # white
+    '#ffa94d',  # orange
+    '#74c0fc',  # light blue
+]
+
 class SensorControllerWidget(QWidget):
     """"Base class for all sensor controller widgets"""
-    def __init__(self, config, sensor_default_data, board_name, sensor_name, sensor_type, udpmanager, testapp):
-        global pt_number
+    def __init__(self, config, sensor_default_data, board_name, sensor_name, sensor_type, udpmanager, testapp, unit, unit_color):
         super().__init__()
         self.config = config
         self.sensor_default_data = sensor_default_data
         self.board_name = board_name
         self.sensor_name = sensor_name
         self.sensor_type = sensor_type  # "pts", "tcs", etc.
+        self.unit = unit
+        self.unit_color = unit_color
         self.udpmanager = udpmanager
         self.testapp = testapp
         
@@ -327,24 +347,25 @@ class SensorControllerWidget(QWidget):
         self.LABEL_WIDTH = 100
         
         # Create common layout
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
-        
-        # Create common UI elements
-        self.name_label = QLabel(f"{self.sensor_type}: {self.sensor_name}")
-        self.name_label.setMinimumWidth(self.LABEL_WIDTH + 20)
-        self.layout.addWidget(self.name_label)
+        self.sensor_layout = QVBoxLayout()
+        self.sensor_layout.setContentsMargins(2, 2, 2, 2)
+        self.sensor_layout.setSpacing(2)
+        self.setLayout(self.sensor_layout)
 
         self.values = {}
-        self.pressure_curves = []
+        self.plot_widgets = []
         # Keep enough points for plotting while limiting memory and copy cost.
         self.MAX_HISTORY_SIZE = max(1000, int(PLOT_SECONDS * 120))
         
         for value_name, _ in self.sensor_default_data.items():
+            label_prefix = f"{self.sensor_name}"
             self.values[value_name] = {"value": "No data"}
-            self.values[value_name]["label"] = QLabel(f"{value_name}: No data")
-            self.values[value_name]["label"].setStyleSheet("font-size: 40px;")
+            self.values[value_name]["label"] = QLabel(f"{label_prefix}: No data")
+            self.values[value_name]["label"].setStyleSheet("font-size: 20px;")
             self.values[value_name]["label"].setMinimumWidth(self.LABEL_WIDTH + 100)
+            self.values[value_name]["label"].setFixedHeight(30)
+            self.values[value_name]["label_prefix"] = label_prefix
+            self.values[value_name]["last_label_ms"] = 0.0
 
             # Fixed-size ring buffer for plotting history
             self.values[value_name]["time_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
@@ -352,38 +373,54 @@ class SensorControllerWidget(QWidget):
             self.values[value_name]["head"] = 0
             self.values[value_name]["count"] = 0
 
-            self.values[value_name]["plot"] = pg.PlotWidget(title=f"{self.sensor_type} {self.sensor_name} {value_name}")
-            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(colors[pt_number % len(colors)], width=2))
+            self.values[value_name]["plot"] = pg.PlotWidget()
+            self.values[value_name]["plot"].setFixedHeight(SENSOR_PLOT_MIN_HEIGHT_PX)
+            self.values[value_name]["plot"].setMouseEnabled(x=True, y=True)
+            self.values[value_name]["plot"].showGrid(x=True, y=True, alpha=0.15)
+            self._install_auto_axis_action(self.values[value_name]["plot"])
+            self.values[value_name]["curve"] = self.values[value_name]["plot"].plot(pen=pg.mkPen(self.unit_color, width=2))
+            self.plot_widgets.append(self.values[value_name]["plot"])
             self.values[value_name]["curve"].setClipToView(True)
             self.values[value_name]["curve"].setDownsampling(auto=True, method="peak")
-            if sensor_type == "pts":
-                self.values[value_name]["pressurecurve"] = self.testapp.pressureplot.plot(pen=pg.mkPen(colors[pt_number % len(colors)], width=2), name=sensor_name)
-                self.values[value_name]["pressurecurve"].setClipToView(True)
-                self.values[value_name]["pressurecurve"].setDownsampling(auto=True, method="peak")
-                self.pressure_curves.append(self.values[value_name]["pressurecurve"])
-            pt_number += 1
 
             self.vertical_layout = QVBoxLayout()
+            self.vertical_layout.setContentsMargins(0, 0, 0, 0)
+            self.vertical_layout.setSpacing(3)
             self.vertical_layout.addWidget(self.values[value_name]["plot"])
             self.vertical_layout.addWidget(self.values[value_name]["label"])
 
 
-            self.layout.addLayout(self.vertical_layout)
+            self.sensor_layout.addLayout(self.vertical_layout)
 
         self.plot_timer = QTimer(self)
         self.plot_timer.timeout.connect(self.update_all_histories)
         self.plot_timer.start(PLOT_UPDATE_INTERVAL_MS)
-        self.layout.addStretch()
+        self.sensor_layout.addStretch()
 
     def cleanup(self):
         if hasattr(self, "plot_timer") and self.plot_timer is not None:
             self.plot_timer.stop()
-        for curve in self.pressure_curves:
-            try:
-                self.testapp.pressureplot.removeItem(curve)
-            except Exception:
-                pass
-        self.pressure_curves.clear()
+
+    def set_plot_height(self, plot_height):
+        for plot_widget in self.plot_widgets:
+            plot_widget.setFixedHeight(plot_height)
+
+    def _install_auto_axis_action(self, plot_widget):
+        plot_item = plot_widget.getPlotItem()
+        view_box = plot_item.getViewBox()
+        menu = view_box.menu if view_box.menu is not None else view_box.getMenu()
+        if menu is None:
+            return
+
+        auto_axis_action = QAction("Auto Axis", plot_widget)
+        auto_axis_action.triggered.connect(
+            lambda _checked=False, item=plot_item: self._enable_auto_axis(item)
+        )
+        menu.addAction(auto_axis_action)
+
+    def _enable_auto_axis(self, plot_item):
+        plot_item.enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
+        plot_item.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
 
     def update_all_histories(self):
         for value_name in self.values:
@@ -408,16 +445,13 @@ class SensorControllerWidget(QWidget):
 
         start_time = times[-1] - (PLOT_SECONDS * 1000)
         start_idx = np.searchsorted(times, start_time, side="left")
+        plot_times = (times[start_idx:] - times[-1]) / 1000.0
+        plot_values = values[start_idx:]
 
         value_dict["curve"].setData(
-            (times[start_idx:] - times[-1]) / 1000.0,
-            values[start_idx:]
+            plot_times,
+            plot_values
         )
-        if self.sensor_type == "pts":
-            value_dict["pressurecurve"].setData(
-                (times - times[0]) / 1000.0,
-                values
-            )
 
     def update_states(self, states):
         timestamp_ms = float(QDateTime.currentMSecsSinceEpoch())
@@ -433,7 +467,9 @@ class SensorControllerWidget(QWidget):
                 
                 # Update the label
                 if value is None:
-                    value_label.setText("Value: No data")
+                    if timestamp_ms - value_dict["last_label_ms"] >= LABEL_UPDATE_INTERVAL_MS:
+                        value_label.setText("Value: No data")
+                        value_dict["last_label_ms"] = timestamp_ms
                 else:
                     if "adc" in self.config[self.sensor_type][self.sensor_name]:
                         gain = self.config[self.sensor_type][self.sensor_name]["gain"]
@@ -443,12 +479,22 @@ class SensorControllerWidget(QWidget):
                             raw_display = f"{int(raw_value)}"
                         else:
                             raw_display = f"{raw_value:.0f}"
-                        value_label.setText(
-                            f"<span>{value:.3f}</span> "
-                            f"<span style='font-size: 24px;'> {raw_display}mV</span>"
-                        )
+                        if timestamp_ms - value_dict["last_label_ms"] >= LABEL_UPDATE_INTERVAL_MS:
+                            value_label.setText(
+                                f"<span style='font-size: 14px; font-weight: 600; color: #e8e8e8;'>{value_dict['label_prefix']} </span>"
+                                f"<span style='font-size: 20px; color: {self.unit_color};'>{value:.3f}</span> "
+                                f"<span style='font-size: 14px; color: {self.unit_color};'>{self.unit}</span> "
+                                f"<span style='font-size: 13px; color: #8f8f8f;'>{raw_display}mV</span>"
+                            )
+                            value_dict["last_label_ms"] = timestamp_ms
                     else:
-                        value_label.setText(f"{value:.2f}")
+                        if timestamp_ms - value_dict["last_label_ms"] >= LABEL_UPDATE_INTERVAL_MS:
+                            value_label.setText(
+                                f"<span style='font-size: 14px; font-weight: 600; color: #e8e8e8;'>{value_dict['label_prefix']} </span>"
+                                f"<span style='font-size: 20px; color: {self.unit_color};'>{value:.2f}</span> "
+                                f"<span style='font-size: 14px; color: {self.unit_color};'>{self.unit}</span>"
+                            )
+                            value_dict["last_label_ms"] = timestamp_ms
                 
                 # Add to the history deque
                 if value is None:
@@ -476,19 +522,17 @@ class PropertyTestApp(QMainWindow):
         self.sensor_list = []
         self.actuator_group_widget = None
         self.sensor_group_widget = None
+        self.unit_color_map = {}
+        self.sensor_plot_row_count = 0
+        self.sensor_unit_group_count = 0
 
 
-        self.setWindowTitle("Property Test App")
-        self.tab_widget = QTabWidget()
-        self.setCentralWidget(self.tab_widget)  
+        self.setWindowTitle("Propulsion Test Client")
+        self.setWindowIcon(QIcon("assets/propclient.ico"))
 
         self.main_tab = QWidget()
-        self.tab_widget.addTab(self.main_tab, "Main")
         self.main_layout = QHBoxLayout(self.main_tab)
-        
-        self.pressure_tab = QWidget()
-        self.tab_widget.addTab(self.pressure_tab, "Pressure")
-        self.pressure_layout = QVBoxLayout(self.pressure_tab)
+        self.setCentralWidget(self.main_tab)  
 
 
         #container = QWidget()
@@ -503,44 +547,41 @@ class PropertyTestApp(QMainWindow):
         self.backend_state_timer = QTimer(self)
         self.backend_state_timer.timeout.connect(self.backend_state_coroutine)
         self.backend_state_timer.start(BACKEND_META_INTERVAL_MS)
-        self.manual_command = QTextEdit(self)
-        self.manual_response = QTextEdit(self)
-        self.manual_response.setReadOnly(True)
-        self.manual_command_button = QPushButton("Send Command")
-        self.manual_command_button.clicked.connect(self.send_manual_command)
-        self.manual_command_layout = QVBoxLayout()
-        self.manual_command_layout.addWidget(self.last_state_update_label)
-        self.manual_command_layout.addWidget(self.manual_command)
-        self.manual_command_layout.addWidget(self.manual_command_button)
-        self.manual_command_layout.addWidget(self.manual_response)
+        self.command_response = QTextEdit(self)
+        self.command_response.setReadOnly(True)
+        self.command_response.setMinimumHeight(170)
+        self.command_response.setPlaceholderText("Command/response output")
 
         self.preset_commands_layout = QVBoxLayout()
-
-        self.statemachine_str = "Request timer didn't load"
-        self.statemachine_label = QLabel("Machine state: {self.statemachine_str}")
-        self.preset_commands_layout.addWidget(self.statemachine_label)
+        self.command_buttons_layout = QHBoxLayout()
+        self.command_buttons_right_layout = QVBoxLayout()
 
         self.abort_button = QPushButton("Abort")
         self.abort_button.setStyleSheet("font-size: 60px;")
-        self.abort_button.setMinimumHeight(300)
+        self.abort_button.setMinimumHeight(180)
+        self.abort_button.setMinimumWidth(170)
         self.abort_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"abort engine", "data":{}})))
-        self.preset_commands_layout.addWidget(self.abort_button)
+        self.command_buttons_layout.addWidget(self.abort_button)
 
         self.hotfire_button = QPushButton("Hotfire")
         self.hotfire_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"start hotfire sequence", "data":{}})))
-        self.preset_commands_layout.addWidget(self.hotfire_button)
+        self.command_buttons_right_layout.addWidget(self.hotfire_button)
 
         self.return_from_idle_button = QPushButton("Return to Idle")
         self.return_from_idle_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"return to idle", "data":{}})))
-        self.preset_commands_layout.addWidget(self.return_from_idle_button)
+        self.command_buttons_right_layout.addWidget(self.return_from_idle_button)
 
         self.reload_hardware_json = QPushButton("Reload Hardware JSON")
         self.reload_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"reload hardware json", "data":{}})))
-        self.preset_commands_layout.addWidget(self.reload_hardware_json)
+        self.command_buttons_right_layout.addWidget(self.reload_hardware_json)
 
         self.get_new_hardware_json = QPushButton("Reload UI")
         self.get_new_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"get hardware json", "data":{}})))
-        self.preset_commands_layout.addWidget(self.get_new_hardware_json)
+        self.command_buttons_right_layout.addWidget(self.get_new_hardware_json)
+
+        self.command_buttons_right_layout.addStretch()
+        self.command_buttons_layout.addLayout(self.command_buttons_right_layout)
+        self.preset_commands_layout.addLayout(self.command_buttons_layout)
 
 
 
@@ -551,39 +592,56 @@ class PropertyTestApp(QMainWindow):
 
         self.datetime_str = "Request timer didn't load"
         self.datetime_label = QLabel(f"Backend Time: {self.datetime_str}")
+
+        self.statemachine_str = "Request timer didn't load"
+        self.statemachine_label = QLabel("Machine state: {self.statemachine_str}")
+
+        self.preset_commands_layout.addWidget(self.statemachine_label)
         self.preset_commands_layout.addWidget(self.datetime_label)
+        self.preset_commands_layout.addWidget(self.last_state_update_label)
+        self.preset_commands_layout.addWidget(self.command_response)
+        
 
         self.preset_commands_layout.addStretch()
 
-        self.commands_layout = QHBoxLayout()
-        self.commands_layout.addLayout(self.preset_commands_layout)
-
         self.control_area = QVBoxLayout()
         self.sensor_area = QVBoxLayout()
+        self.control_area.setSpacing(2)
+        self.sensor_area.setSpacing(4)
 
-        self.temp_layout = QHBoxLayout()
+        self.left_panel_layout = QVBoxLayout()
+        self.left_panel_layout.setSpacing(8)
+        self.left_panel_layout.addLayout(self.preset_commands_layout)
+        self.left_panel_layout.addLayout(self.control_area)
 
-        self.actuators_sensors_area = QVBoxLayout()
-        self.actuators_sensors_area.addLayout(self.control_area)
-        self.actuators_sensors_area.addLayout(self.sensor_area)
+        # Add two dark red server control buttons
+        self.reboot_button = QPushButton("Reboot PI")
+        self.reboot_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"reboot pi", "data":{}})))
+        self.reboot_button.setStyleSheet("background-color: darkred; color: white;")
 
-        self.temp_layout.addLayout(self.actuators_sensors_area)
-        self.temp_layout.addLayout(self.manual_command_layout)
+        self.shutdown_button = QPushButton("Shutdown PI")
+        self.shutdown_button.setStyleSheet("background-color: darkred; color: white;")
+        self.shutdown_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"shutdown pi", "data":{}})))
 
-        self.main_layout.addLayout(self.commands_layout)
-        self.main_layout.addWidget(self.data_waiting_label)
-        self.main_layout.addLayout(self.temp_layout)
-        # self.main_layout.addLayout(self.actuators_sensors_area)
+        self.pi_buttons_layout = QHBoxLayout()
+        self.pi_buttons_layout.addWidget(self.reboot_button)
+        self.pi_buttons_layout.addWidget(self.shutdown_button)
+        self.left_panel_layout.addLayout(self.pi_buttons_layout)
         
 
+        self.right_panel_layout = QVBoxLayout()
+        self.right_panel_layout.setSpacing(6)
+        self.right_panel_layout.addWidget(self.data_waiting_label)
+        self.right_panel_layout.addLayout(self.sensor_area)
+
+        self.main_layout.addLayout(self.left_panel_layout)
+        self.main_layout.addLayout(self.right_panel_layout)
+
+        self.main_layout.setStretch(0, 3)
+        self.main_layout.setStretch(1, 7)
+        self.right_panel_layout.setStretch(0, 0)
+        self.right_panel_layout.setStretch(1, 10)
         
-
-
-        self.pressureplot = pg.PlotWidget(title="Pressure")
-        self.pressureplot.addLegend()
-        self.pressure_layout.addWidget(self.pressureplot)
-
-
         self.udp_manager = UDPManager(self.host, self.port)
         self.udp_manager.dataReceived.connect(self.handle_data_received)
 
@@ -610,6 +668,8 @@ class PropertyTestApp(QMainWindow):
             sensor.setParent(None)
             sensor.deleteLater()
         self.sensor_list.clear()
+        self.sensor_plot_row_count = 0
+        self.sensor_unit_group_count = 0
 
         if self.actuator_group_widget is not None:
             self.control_area.removeWidget(self.actuator_group_widget)
@@ -623,9 +683,12 @@ class PropertyTestApp(QMainWindow):
             self.sensor_group_widget.deleteLater()
             self.sensor_group_widget = None
 
-        self.pressureplot.clear()
-        if self.pressureplot.plotItem.legend is None:
-            self.pressureplot.addLegend()
+    def _unit_color(self, unit):
+        unit_key = unit or "value"
+        if unit_key not in self.unit_color_map:
+            idx = len(self.unit_color_map) % len(UNIT_COLOR_PALETTE)
+            self.unit_color_map[unit_key] = UNIT_COLOR_PALETTE[idx]
+        return self.unit_color_map[unit_key]
 
     def _build_dynamic_ui_from_hardware(self):
         if self.hardware_json is None:
@@ -634,6 +697,8 @@ class PropertyTestApp(QMainWindow):
 
         actuator_group = QGroupBox("Actuators")
         actuator_layout = QVBoxLayout()
+        actuator_layout.setContentsMargins(4, 4, 4, 4)
+        actuator_layout.setSpacing(2)
 
         default_actuator_types = {
             "servos": ServoControllerWidget,
@@ -656,20 +721,111 @@ class PropertyTestApp(QMainWindow):
 
         sensor_group = QGroupBox("Sensors")
         sensor_mainlayout = QVBoxLayout()
+        sensor_mainlayout.setContentsMargins(4, 4, 4, 4)
+        sensor_mainlayout.setSpacing(6)
+        columns = 3
+
+        sensors_by_unit = {}
         for board_name, board_config in hardware_json["boards"].items():
             if not board_config.get("is_actuator", False):
                 for sensor_type, sensor_default_data in self.state_defaults.items():
                     if sensor_type in board_config and isinstance(board_config[sensor_type], dict):
-                        sensor_layout = QHBoxLayout()
-                        sensor_mainlayout.addLayout(sensor_layout)
-                        for sensor_name, _ in board_config[sensor_type].items():
-                            sensor_controller_widget = SensorControllerWidget(board_config, sensor_default_data, board_name, sensor_name, sensor_type, self.udp_manager, self)
-                            sensor_layout.addWidget(sensor_controller_widget)
+                        for sensor_name, sensor_cfg in board_config[sensor_type].items():
+                            unit = ""
+                            if isinstance(sensor_cfg, dict):
+                                unit = str(sensor_cfg.get("unit", ""))
+                            unit = unit or "value"
+                            unit_color = self._unit_color(unit)
+                            sensor_controller_widget = SensorControllerWidget(
+                                board_config,
+                                sensor_default_data,
+                                board_name,
+                                sensor_name,
+                                sensor_type,
+                                self.udp_manager,
+                                self,
+                                unit,
+                                unit_color,
+                            )
+                            sensors_by_unit.setdefault(unit, []).append(sensor_controller_widget)
                             self.sensor_list.append(sensor_controller_widget)
-        sensor_mainlayout.addStretch()
+
+        bottom_row_widgets = []
+        for unit, widgets in sensors_by_unit.items():
+            if not widgets:
+                continue
+
+            # Multi-sensor units get their own dedicated row; singletons share the bottom grid.
+            if len(widgets) == 1:
+                bottom_row_widgets.extend(widgets)
+                continue
+
+            type_group = QGroupBox(unit)
+            type_layout = QGridLayout()
+            type_layout.setContentsMargins(2, 2, 2, 2)
+            type_layout.setHorizontalSpacing(6)
+            type_layout.setVerticalSpacing(4)
+
+            for idx, sensor_widget in enumerate(widgets):
+                type_layout.addWidget(sensor_widget, idx // columns, idx % columns)
+            for col in range(columns):
+                type_layout.setColumnStretch(col, 1)
+
+            type_group.setLayout(type_layout)
+            sensor_mainlayout.addWidget(type_group)
+            self.sensor_plot_row_count += (len(widgets) + columns - 1) // columns
+            self.sensor_unit_group_count += 1
+
+        if bottom_row_widgets:
+            bottom_group = QGroupBox("single channels")
+            bottom_layout = QGridLayout()
+            bottom_layout.setContentsMargins(2, 2, 2, 2)
+            bottom_layout.setHorizontalSpacing(6)
+            bottom_layout.setVerticalSpacing(4)
+            for idx, sensor_widget in enumerate(bottom_row_widgets):
+                bottom_layout.addWidget(sensor_widget, idx // columns, idx % columns)
+            for col in range(columns):
+                bottom_layout.setColumnStretch(col, 1)
+            bottom_group.setLayout(bottom_layout)
+            sensor_mainlayout.addWidget(bottom_group)
+            self.sensor_plot_row_count += (len(bottom_row_widgets) + columns - 1) // columns
+            self.sensor_unit_group_count += 1
+
         sensor_group.setLayout(sensor_mainlayout)
         self.sensor_area.addWidget(sensor_group)
         self.sensor_group_widget = sensor_group
+        QTimer.singleShot(0, self._apply_adaptive_sensor_plot_heights)
+
+    def _apply_adaptive_sensor_plot_heights(self):
+        if self.sensor_group_widget is None or self.sensor_plot_row_count <= 0:
+            return
+
+        group_height = self.sensor_group_widget.height()
+        if group_height <= 0:
+            return
+
+        # Reserve space for section headers and per-plot value labels; fill the remainder with equal plot heights.
+        sensors_header_px = 26
+        unit_group_header_px = 24
+        unit_group_spacing_px = 6
+        label_block_px = 34
+        reserved_px = (
+            sensors_header_px
+            + (self.sensor_unit_group_count * unit_group_header_px)
+            + (max(0, self.sensor_unit_group_count - 1) * unit_group_spacing_px)
+            + (self.sensor_plot_row_count * label_block_px)
+            + 16
+        )
+        available_plot_px = max(0, group_height - reserved_px)
+        raw_height = available_plot_px // self.sensor_plot_row_count if self.sensor_plot_row_count else SENSOR_PLOT_MIN_HEIGHT_PX
+        target_plot_height = max(SENSOR_PLOT_MIN_HEIGHT_PX, min(SENSOR_PLOT_MAX_HEIGHT_PX, raw_height))
+
+        for sensor_widget in self.sensor_list:
+            sensor_widget.set_plot_height(target_plot_height)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_adaptive_sensor_plot_heights()
 
     def reload_hardware_json_received(self, response):
         try:
@@ -720,7 +876,7 @@ class PropertyTestApp(QMainWindow):
             if command in self.commands_responses:
                 self.commands_responses[command](response)
             else:
-                self.manual_response.append(json.dumps(data, indent=4))
+                self.command_response.append(json.dumps(data, indent=4))
         except json.JSONDecodeError:
             print("Failed to decode JSON data")
     def hardware_json_received(self, response):
@@ -728,7 +884,6 @@ class PropertyTestApp(QMainWindow):
         pt_number = 0
         self.udp_manager.set_hardware_json_received(True)
         if self.data_waiting_label is not None:
-            self.main_layout.removeWidget(self.data_waiting_label)
             self.data_waiting_label.setParent(None)
             self.data_waiting_label.deleteLater()
             self.data_waiting_label = None
@@ -790,22 +945,6 @@ class PropertyTestApp(QMainWindow):
             else:
                 print(f"Board {board_name} not found in hardware json")
         self.last_update_time = QDateTime.currentDateTime()
-    def send_manual_command(self):
-        command = self.manual_command.toPlainText()
-        if not command:
-            return
-        #self.manual_response.clear()
-        try:
-            command_json = json.loads(command)
-            if "command" not in command_json:
-                self.manual_response.append("No command in JSON")
-                return
-            if "data" not in command_json:
-                self.manual_response.append("No data in JSON")
-                return
-            self.udp_manager.send(command)
-        except json.JSONDecodeError:
-            self.manual_response.append("Invalid JSON format")
     def backend_state_coroutine(self):
         self.udp_manager.send(json.dumps({"command":"get state", "data":{}}))
         self.udp_manager.send(json.dumps({"command":"get time", "data":{}}))
@@ -833,7 +972,17 @@ if __name__ == "__main__":
     # host = "127.0.0.1"
     port = 8888
 
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("propfirmware.newclient.propclient")
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
+    app_icon = Path("assets/propclient.ico")
+    if app_icon.exists():
+        app.setWindowIcon(QIcon(str(app_icon)))
+
     window = PropertyTestApp(host, port)
     window.show()
 
