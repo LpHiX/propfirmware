@@ -1,7 +1,6 @@
 import argparse
 import itertools
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, cast
@@ -841,7 +840,13 @@ class H5FileTab(BaseWidget):
                 self._warn_derived("numexpr is not installed. Install with: pip install numexpr")
             return None
 
-        variable_names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", definition.expression))
+        try:
+            parsed_expression = ne.NumExpr(definition.expression)
+            variable_names = {str(name) for name in parsed_expression.input_names}
+        except Exception as exc:
+            if show_errors:
+                self._warn_derived(f"Invalid expression syntax:\n{exc}")
+            return None
         values_context: Dict[str, np.ndarray] = {}
         reference_time: np.ndarray | None = None
 

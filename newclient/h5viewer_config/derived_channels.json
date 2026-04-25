@@ -1,9 +1,19 @@
 {
   "channels": [
     {
-      "name": "flow_lps",
-      "expression": "fms_fm0_flowrate / 60",
-      "unit": "l/s"
+      "name": "cd_1_2",
+      "expression": "(fms_fm0_flowrate/1000 / 0.00012667687) * sqrt(1000  / (2 *100000 * (adc_pt_in_mv - adc_pt_out_mv)))",
+      "unit": "derived"
+    },
+    {
+      "name": "cd_1_4",
+      "expression": "(fms_fm0_flowrate/1000 / 0.0000384845100065) * sqrt(1000  / (2 *100000 * (adc_pt_in_mv - adc_pt_out_mv)))",
+      "unit": "derived"
+    },
+    {
+      "name": "kv",
+      "expression": "fms_fm0_flowrate / 1000 * 3600  * sqrt(1 / (adc_pt_in_mv - adc_pt_out_mv))",
+      "unit": "m3_h"
     }
   ]
 }

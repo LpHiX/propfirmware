@@ -117,21 +117,21 @@ class ActuatorControllerWidget(QWidget):
         
         # Create common UI elements
         self.name_label = QLabel(f"{self.get_actuator_type_name()}: {self.actuator_name}")
-        self.name_label.setFixedWidth(self.LABEL_WIDTH)
+        self.name_label.setMinimumWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.name_label)
         
         # Armed state is common to most actuators
         self.armed_label = QLabel(f"Armed: No data")
-        self.armed_label.setFixedWidth(self.LABEL_WIDTH)
+        self.armed_label.setMinimumWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.armed_label)
         
         # Common arm/disarm buttons
         self.arm_button = QPushButton("Arm")
-        self.arm_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.arm_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.arm_button.clicked.connect(lambda: self.send_command("armed", True))
         
         self.disarm_button = QPushButton("Disarm")
-        self.disarm_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.disarm_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.disarm_button.clicked.connect(lambda: self.send_command("armed", False))
         
         self.layout.addWidget(self.arm_button)
@@ -194,23 +194,23 @@ class ServoControllerWidget(ActuatorControllerWidget):
     def setup_specific_ui(self):
         # Servo-specific UI elements
         self.angle_label = QLabel("Angle: No data")
-        self.angle_label.setFixedWidth(self.LABEL_WIDTH)
+        self.angle_label.setMinimumWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.angle_label)
 
         self.desired_angle_label = QLabel("Desired Angle: No data")
-        self.desired_angle_label.setFixedWidth(self.LABEL_WIDTH)
+        self.desired_angle_label.setMinimumWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.desired_angle_label)
         
         self.manual_angle = QLineEdit(self)
-        self.manual_angle.setFixedWidth(self.INPUT_WIDTH)
+        self.manual_angle.setMinimumWidth(self.INPUT_WIDTH)
         self.manual_angle.setPlaceholderText("0")
         
         self.manual_angle_button = QPushButton("Set Angle")
-        self.manual_angle_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.manual_angle_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.manual_angle_button.clicked.connect(self.set_manual_angle)
 
         self.zero_angle_button = QPushButton("Set 0")
-        self.zero_angle_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.zero_angle_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.zero_angle_button.clicked.connect(self.set_zero_angle)
         
         self.layout.addWidget(self.manual_angle)
@@ -254,15 +254,15 @@ class SolenoidControllerWidget(ActuatorControllerWidget):
     def setup_specific_ui(self):
         # Solenoid-specific UI elements
         self.powered_label = QLabel("Powered: No data")
-        self.powered_label.setFixedWidth(self.LABEL_WIDTH)
+        self.powered_label.setMinimumWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.powered_label)
         
         self.poweron_button = QPushButton("Power On")
-        self.poweron_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweron_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.poweron_button.clicked.connect(lambda: self.send_command("powered", True))
         
         self.poweroff_button = QPushButton("Power Off")
-        self.poweroff_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweroff_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.poweroff_button.clicked.connect(lambda: self.send_command("powered", False))
         
         self.layout.addWidget(self.poweron_button)
@@ -286,15 +286,15 @@ class PyroControllerWidget(ActuatorControllerWidget):
     def setup_specific_ui(self):
         # Pyro-specific UI elements
         self.powered_label = QLabel("Powered: No data")
-        self.powered_label.setFixedWidth(self.LABEL_WIDTH)
+        self.powered_label.setMinimumWidth(self.LABEL_WIDTH)
         self.layout.addWidget(self.powered_label)
         
         self.poweron_button = QPushButton("Power On")
-        self.poweron_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweron_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.poweron_button.clicked.connect(lambda: self.send_command("powered", True))
         
         self.poweroff_button = QPushButton("Power Off")
-        self.poweroff_button.setFixedWidth(self.BUTTON_WIDTH)
+        self.poweroff_button.setMinimumWidth(self.BUTTON_WIDTH)
         self.poweroff_button.clicked.connect(lambda: self.send_command("powered", False))
         
         self.layout.addWidget(self.poweron_button)
@@ -332,7 +332,7 @@ class SensorControllerWidget(QWidget):
         
         # Create common UI elements
         self.name_label = QLabel(f"{self.sensor_type}: {self.sensor_name}")
-        self.name_label.setFixedWidth(self.LABEL_WIDTH + 20)
+        self.name_label.setMinimumWidth(self.LABEL_WIDTH + 20)
         self.layout.addWidget(self.name_label)
 
         self.values = {}
@@ -344,7 +344,7 @@ class SensorControllerWidget(QWidget):
             self.values[value_name] = {"value": "No data"}
             self.values[value_name]["label"] = QLabel(f"{value_name}: No data")
             self.values[value_name]["label"].setStyleSheet("font-size: 40px;")
-            self.values[value_name]["label"].setFixedWidth(self.LABEL_WIDTH + 100)
+            self.values[value_name]["label"].setMinimumWidth(self.LABEL_WIDTH + 100)
 
             # Fixed-size ring buffer for plotting history
             self.values[value_name]["time_array"] = np.zeros(self.MAX_HISTORY_SIZE, dtype=np.float64)
@@ -499,7 +499,7 @@ class PropertyTestApp(QMainWindow):
 
         self.last_update_time = None
         self.last_state_update_label = QLabel("Last state update: Never")
-        self.last_state_update_label.setFixedWidth(200)
+        self.last_state_update_label.setMinimumWidth(200)
         self.backend_state_timer = QTimer(self)
         self.backend_state_timer.timeout.connect(self.backend_state_coroutine)
         self.backend_state_timer.start(BACKEND_META_INTERVAL_MS)
@@ -522,7 +522,7 @@ class PropertyTestApp(QMainWindow):
 
         self.abort_button = QPushButton("Abort")
         self.abort_button.setStyleSheet("font-size: 60px;")
-        self.abort_button.setFixedHeight(300)
+        self.abort_button.setMinimumHeight(300)
         self.abort_button.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"abort engine", "data":{}})))
         self.preset_commands_layout.addWidget(self.abort_button)
 
@@ -538,7 +538,7 @@ class PropertyTestApp(QMainWindow):
         self.reload_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"reload hardware json", "data":{}})))
         self.preset_commands_layout.addWidget(self.reload_hardware_json)
 
-        self.get_new_hardware_json = QPushButton("Get New Hardware JSON (DOESNT WORK)")
+        self.get_new_hardware_json = QPushButton("Reload UI")
         self.get_new_hardware_json.clicked.connect(lambda: self.udp_manager.send(json.dumps({"command":"get hardware json", "data":{}})))
         self.preset_commands_layout.addWidget(self.get_new_hardware_json)
 
